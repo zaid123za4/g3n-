@@ -330,7 +330,7 @@ client.on('messageCreate', async (message) => {
   }
 
   if (cmd === '=csend') {
-    if (!message.member.roles.cache.has('1121741911406903376'))
+    if (!message.member.roles.cache.has('1374250200511680582'))
       return message.reply('🚫 Missing required role.');
     const user = message.mentions.users.first();
     if (!user) return message.reply('❌ Mention a user to send cookie.');
