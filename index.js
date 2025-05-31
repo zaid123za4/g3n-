@@ -373,7 +373,18 @@ client.on('messageCreate', async (message) => {
     saveData();
     return message.reply(`✅ Redeemed stock name: ${code}`);
   }
+}
 
+if (cmd === '=pls') {
+  if (!AUTHORIZED_USERS.includes(message.author.id))
+    return message.reply('🚫 Not authorized.');
+  const stockName = args[1];
+  if (!stockName) return message.reply('❌ Specify stock name.');
+  if (redeemed[stockName]) return message.reply('❌ Stock name already redeemed.');
+  redeemed[stockName] = message.author.id;
+  saveData();
+  return message.reply(`✅ Redeemed stock name: ${stockName}`);
+}
   if (cmd === '=debug') {
     if (message.author.id !== OWNER_ID) return;
     return message.channel.send(
