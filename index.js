@@ -5,9 +5,9 @@ const crypto = require('crypto');
 const AdmZip = require('adm-zip');
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
 
-const TOKEN = 'process.env.TOKEN';
-const CLIENT_ID = 'process.env.ID';
-const GUILD_ID = 'process.env.gid';
+const TOKEN = process.env.TOKEN;
+const CLIENT_ID = process.env.ID ;
+const GUILD_ID =  process.env.gid ;
 const OWNER_ID = '1110864648787480656';
 const AUTHORIZED_USERS = ['1110864648787480656', '1212961835582623755', '1333798275601662056'];
 
