@@ -5,206 +5,366 @@ const crypto = require('crypto');
 const AdmZip = require('adm-zip');
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
 
-const TOKEN = process.env.TOKEN;
-const CLIENT_ID = process.env.ID ;
-const GUILD_ID =  process.env.gid ;
+// === Config & Constants ===
+const TOKEN = process.env.TOKEN || 'YOUR_BOT_TOKEN'; // Replace with your token or use env
 const OWNER_ID = '1110864648787480656';
 const AUTHORIZED_USERS = ['1110864648787480656', '1212961835582623755', '1333798275601662056'];
 
 const DATA_DIR = './data';
 const COOKIE_DIR = './cookies';
+const VOUCH_PATH = './vouches.json';
 
-const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
-  partials: [Partials.Channel]
-});
+// === Ensure directories exist ===
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
+if (!fs.existsSync(COOKIE_DIR)) fs.mkdirSync(COOKIE_DIR);
+if (!fs.existsSync(VOUCH_PATH)) fs.writeFileSync(VOUCH_PATH, JSON.stringify({}));
 
+// === Global data stores ===
 let rolesAllowed = {};
 let stock = {};
 let redeemed = {};
 let fileStock = {};
 
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
-if (!fs.existsSync(COOKIE_DIR)) fs.mkdirSync(COOKIE_DIR);
+// === Helper functions for data persistence ===
+function loadJSON(filepath, defaultValue = {}) {
+  if (!fs.existsSync(filepath)) return defaultValue;
+  try {
+    return JSON.parse(fs.readFileSync(filepath));
+  } catch {
+    return defaultValue;
+  }
+}
+function saveJSON(filepath, data) {
+  fs.writeFileSync(filepath, JSON.stringify(data, null, 2));
+}
 
-const loadData = () => {
-  if (fs.existsSync(`${DATA_DIR}/stock.json`)) stock = JSON.parse(fs.readFileSync(`${DATA_DIR}/stock.json`));
-  if (fs.existsSync(`${DATA_DIR}/redeemed.json`)) redeemed = JSON.parse(fs.readFileSync(`${DATA_DIR}/redeemed.json`));
-  if (fs.existsSync(`${DATA_DIR}/roles.json`)) rolesAllowed = JSON.parse(fs.readFileSync(`${DATA_DIR}/roles.json`));
-};
+// Vouches
+function loadVouches() {
+  return loadJSON(VOUCH_PATH);
+}
+function saveVouches(data) {
+  saveJSON(VOUCH_PATH, data);
+}
 
-const saveData = () => {
-  fs.writeFileSync(`${DATA_DIR}/stock.json`, JSON.stringify(stock, null, 2));
-  fs.writeFileSync(`${DATA_DIR}/redeemed.json`, JSON.stringify(redeemed, null, 2));
-  fs.writeFileSync(`${DATA_DIR}/roles.json`, JSON.stringify(rolesAllowed, null, 2));
-};
+// Cookie data
+function loadData() {
+  stock = loadJSON(path.join(DATA_DIR, 'stock.json'));
+  redeemed = loadJSON(path.join(DATA_DIR, 'redeemed.json'));
+  rolesAllowed = loadJSON(path.join(DATA_DIR, 'roles.json'));
+}
+function saveData() {
+  saveJSON(path.join(DATA_DIR, 'stock.json'), stock);
+  saveJSON(path.join(DATA_DIR, 'redeemed.json'), redeemed);
+  saveJSON(path.join(DATA_DIR, 'roles.json'), rolesAllowed);
+}
 
-const generateCode = () => crypto.randomBytes(4).toString('hex');
-
-const updateFileStock = () => {
+// Update file stock from cookie folder structure
+function updateFileStock() {
+  fileStock = {};
   for (const category of fs.readdirSync(COOKIE_DIR)) {
     const categoryPath = path.join(COOKIE_DIR, category);
     if (fs.lstatSync(categoryPath).isDirectory()) {
       fileStock[category] = fs.readdirSync(categoryPath);
     }
   }
-};
+}
 
-client.on('messageCreate', async (msg) => {
-  if (msg.author.bot) return;
+// === Initialize data on startup ===
+loadData();
+updateFileStock();
 
-  const args = msg.content.trim().split(/\s+/);
-  const cmd = args[0].toLowerCase();
-
-  // CATEGORY & STOCK MANAGEMENT
-  if (cmd === '=addcategory') {
-    const name = args[1]?.toLowerCase();
-    if (!name) return msg.reply('❌ Provide a category name.');
-    if (stock[name]) return msg.reply('❌ Category already exists.');
-    stock[name] = [];
-    createDynamicCommand(name);
-    saveData();
-    return msg.reply(`✅ Category \`${name}\` created and command \`=${name[0]}gen\` is now active.`);
-  }
-
-  if (cmd === '=addstock') {
-    const category = args[1]?.toLowerCase();
-    const code = args.slice(2).join(' ');
-    if (!category || !code) return msg.reply('❌ Usage: =addstock <category> <stock_name>');
-    if (!stock[category]) return msg.reply('❌ Category not found.');
-    stock[category].push(code);
-    saveData();
-    return msg.reply(`✅ Stock \`${code}\` added to \`${category}\`.`);
-  }
-
-  if (cmd === '=add') {
-    const command = args[1]?.toLowerCase();
-    const role = msg.mentions.roles.first();
-    if (!command || !role) return msg.reply('❌ Usage: =add <command> @role');
-    rolesAllowed[command] = role.id;
-    saveData();
-    return msg.reply(`✅ Command \`=${command}\` is now usable by ${role}`);
-  }
-
-  if (cmd === '=help') {
-    let helpMsg = '**📜 Available Commands:**\n';
-    Object.keys(stock).forEach(cat => helpMsg += `=\`${cat[0]}gen\` - Generate from ${cat}\n`);
-    helpMsg += '`=addcategory <name>`\n`=addstock <category> <stock_name>`\n`=redeem <code>`\n`=backup`\n`=upload`\n`=csend <category> @user`\n`=cstock`\n`=stock`\n`=pls`';
-    return msg.reply(helpMsg);
-  }
-
-  if (cmd === '=redeem') {
-    const code = args[1];
-    if (!code || !redeemed[code]) return msg.reply('❌ Invalid code.');
-    const { category, stock: codeName, user } = redeemed[code];
-    return msg.reply(`🔑 Code \`${code}\` was redeemed for \`${codeName}\` from category \`${category}\`.`);
-  }
-
-  if (cmd === '=backup') {
-    if (msg.author.id !== OWNER_ID) return;
-    const files = ['stock.json', 'redeemed.json', 'roles.json'];
-    const attachments = files.map(f => ({ attachment: path.join(DATA_DIR, f), name: f }));
-    attachments.push({ attachment: __filename, name: path.basename(__filename) });
-    return msg.author.send({ content: '📦 Backup files:', files: attachments });
-  }
-
-  // FILE MANAGEMENT
-  if (cmd === '=upload') {
-    if (!AUTHORIZED_USERS.includes(msg.author.id)) return msg.reply('🚫 You are not authorized to upload.');
-    if (msg.attachments.size === 0) return msg.reply('📎 Please attach a ZIP file.');
-    const attachment = msg.attachments.first();
-    const category = args[1];
-    if (!category) return msg.reply('Usage: `=upload <category>`');
-    const categoryPath = path.join(COOKIE_DIR, category);
-    if (!fs.existsSync(categoryPath)) fs.mkdirSync(categoryPath);
-
-    const tempPath = path.join(COOKIE_DIR, `${Date.now()}_temp.zip`);
-    const res = await fetch(attachment.url);
-    const buffer = await res.arrayBuffer();
-    fs.writeFileSync(tempPath, Buffer.from(buffer));
-
-    const zip = new AdmZip(tempPath);
-    zip.extractAllTo(categoryPath, true);
-    fs.unlinkSync(tempPath);
-    updateFileStock();
-    return msg.reply(`✅ Uploaded and extracted files to **${category}**.`);
-  }
-
-  if (cmd === '=csend') {
-    if (!msg.member.roles.cache.some(role => role.name === 'YourStaffRole')) return msg.reply('🚫 You don\'t have permission to use this.');
-    const category = args[1];
-    const user = msg.mentions.users.first();
-    if (!category || !user) return msg.reply('Usage: `=csend <category> @user`');
-    const categoryPath = path.join(COOKIE_DIR, category);
-    if (!fs.existsSync(categoryPath)) return msg.reply('❌ Category not found.');
-    const files = fs.readdirSync(categoryPath);
-    if (files.length === 0) return msg.reply('📭 No stock available in this category.');
-    const filePath = path.join(categoryPath, files[0]);
-    const attachment = new AttachmentBuilder(filePath);
-    await user.send({ content: `Here is your cookie for **${category}**.`, files: [attachment] });
-    fs.unlinkSync(filePath);
-    updateFileStock();
-    return msg.reply(`✅ Cookie sent to ${user.tag} and removed from stock.`);
-  }
-
-  if (cmd === '=stock') {
-    updateFileStock();
-    if (Object.keys(fileStock).length === 0) return msg.reply('📦 No stock available.');
-    const embed = new EmbedBuilder().setTitle('📦 Current Stock').setColor('Blue');
-    for (const category in fileStock) {
-      const items = fileStock[category];
-      embed.addFields({ name: category, value: items.length ? items.join('\n') : 'No stock added yet.', inline: false });
-    }
-    return msg.channel.send({ embeds: [embed] });
-  }
-
-  if (cmd === '=cstock') {
-    updateFileStock();
-    let msgText = '📦 **Stock Count Per Category:**\n';
-    for (const category in fileStock) {
-      msgText += `**${category}** - ${fileStock[category].length} item(s)\n`;
-    }
-    return msg.reply(msgText);
-  }
-
-  if (cmd === '=pls') {
-    const embed = new EmbedBuilder()
-      .setTitle('Cheers for our staff!')
-      .setDescription(`🌟 Share the love with \`+vouch @user\` in <#1374018342444204067>. Your appreciation brightens our day!\n\nIf you're not satisfied, type \`-vouch @user\` to provide feedback. 🎉`)
-      .setColor('Yellow');
-    return msg.channel.send({ embeds: [embed] });
-  }
+// === Client Setup ===
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+  ],
+  partials: [Partials.Channel],
 });
 
+client.once('ready', () => {
+  console.log(`✅ Logged in as ${client.user.tag}`);
+});
+
+// === Dynamic commands map to avoid multiple listeners for stock gen commands ===
+const dynamicCommands = new Set();
+
+// Function to create stock generation commands dynamically
 function createDynamicCommand(category) {
   const commandName = `${category[0]}gen`;
+  if (dynamicCommands.has(commandName)) return; // avoid duplicates
+
+  dynamicCommands.add(commandName);
+
   client.on('messageCreate', async (msg) => {
     if (msg.author.bot) return;
     const args = msg.content.trim().split(/\s+/);
     if (args[0]?.toLowerCase() !== `=${commandName}`) return;
 
+    // Check role permission
+    const requiredRoleId = rolesAllowed[commandName];
+    if (requiredRoleId && !msg.member.roles.cache.has(requiredRoleId)) {
+      return msg.reply('🚫 You do not have permission to use this command.');
+    }
+
     const name = args[1];
     if (!name) return msg.reply('❌ Provide a stock name to generate.');
     if (!stock[category]) return msg.reply('❌ Category does not exist.');
-    if (!stock[category].includes(name)) return msg.reply('❌ Stock not found in this category.');
 
-    const genCode = generateCode();
-    redeemed[genCode] = { category, stock: name, user: msg.author.id, time: Date.now() };
+    const itemIndex = stock[category].findIndex((item) => item.toLowerCase() === name.toLowerCase());
+    if (itemIndex === -1) return msg.reply('❌ Stock name not found.');
+
+    // Remove from stock and save
+    const [item] = stock[category].splice(itemIndex, 1);
     saveData();
-    return msg.author.send(`✅ Here is your code for **${name}** from **${category}**: \`${genCode}\``)
-      .then(() => msg.reply('📬 Check your DM for the code.'));
+
+    msg.reply(`✅ Generated stock: \`${item}\``);
   });
 }
 
-client.once('ready', () => {
-  console.log(`✅ Logged in as ${client.user.tag}`);
-  loadData();
-  updateFileStock();
-  Object.keys(stock).forEach(createDynamicCommand);
+// Load dynamic commands for all categories on startup
+for (const category of Object.keys(stock)) {
+  createDynamicCommand(category);
+}
+
+// === Main message handler ===
+client.on('messageCreate', async (message) => {
+  if (message.author.bot) return;
+
+  const args = message.content.trim().split(/\s+/);
+  const cmd = args[0].toLowerCase();
+
+  // ----- Vouch commands -----
+  if (cmd === '+vouch') {
+    const user = message.mentions.users.first();
+    const reason = args.slice(2).join(' ');
+    if (!user || !reason) return message.reply('Usage: `+vouch @user <reason>`');
+
+    const vouches = loadVouches();
+    const id = user.id;
+
+    if (!vouches[id]) {
+      vouches[id] = { count: 0, reasons: [], lastVouched: null };
+    }
+
+    vouches[id].count++;
+    vouches[id].reasons.push({
+      by: message.author.tag,
+      reason,
+      date: new Date().toLocaleString(),
+    });
+    vouches[id].lastVouched = new Date().toLocaleString();
+
+    saveVouches(vouches);
+    return message.channel.send(`✅ Vouched for **${user.tag}**. Reason: "${reason}"`);
+  }
+
+  if (cmd === '-vouch') {
+    const user = message.mentions.users.first();
+    const reason = args.slice(2).join(' ');
+    if (!user || !reason) return message.reply('Usage: `-vouch @user <reason>`');
+
+    const vouches = loadVouches();
+    const id = user.id;
+
+    if (!vouches[id] || vouches[id].count <= 0)
+      return message.reply('❌ User has no vouches to remove.');
+
+    vouches[id].count--;
+    vouches[id].reasons.push({
+      by: message.author.tag,
+      reason: `REMOVED: ${reason}`,
+      date: new Date().toLocaleString(),
+    });
+    vouches[id].lastVouched = new Date().toLocaleString();
+
+    saveVouches(vouches);
+    return message.channel.send(`❌ Removed a vouch from **${user.tag}**. Reason: "${reason}"`);
+  }
+
+  if (cmd === '=profile') {
+    const user = message.mentions.users.first() || message.author;
+    const vouches = loadVouches();
+    const data = vouches[user.id];
+
+    if (!data) return message.reply(`${user.tag} has no vouches.`);
+
+    const embed = new EmbedBuilder()
+      .setColor(0x2ecc71)
+      .setTitle('Profile')
+      .setThumbnail(user.displayAvatarURL())
+      .setDescription(`${user.tag} has received ${data.count} vouches.`)
+      .addFields(
+        { name: 'Total Vouches', value: `${data.count}`, inline: true },
+        { name: 'Last Vouched', value: `${data.lastVouched}`, inline: true },
+        {
+          name: 'Vouch Reasons',
+          value:
+            data.reasons
+              .slice(-5)
+              .map((r, i) => `**${i + 1}.** ${r.by}: ${r.reason} (${r.date})`)
+              .join('\n') || 'No reasons.',
+        }
+      )
+      .setFooter({ text: 'Vouch Bot' });
+
+    return message.channel.send({ embeds: [embed] });
+  }
+
+  // ----- Cookie / Stock Management commands -----
+  if (cmd === '=addcategory') {
+    if (!message.member.permissions.has('ManageGuild')) return message.reply('🚫 You need Manage Server permission.');
+    const name = args[1]?.toLowerCase();
+    if (!name) return message.reply('❌ Provide a category name.');
+    if (stock[name]) return message.reply('❌ Category already exists.');
+    stock[name] = [];
+    createDynamicCommand(name);
+    saveData();
+    return message.reply(`✅ Category \`${name}\` created and command \`=${name[0]}gen\` is now active.`);
+  }
+
+  if (cmd === '=addstock') {
+    if (!message.member.permissions.has('ManageGuild')) return message.reply('🚫 You need Manage Server permission.');
+    const category = args[1]?.toLowerCase();
+    const code = args.slice(2).join(' ');
+    if (!category || !code) return message.reply('❌ Usage: =addstock <category> <stock_name>');
+    if (!stock[category]) return message.reply('❌ Category not found.');
+    stock[category].push(code);
+    saveData();
+    return message.reply(`✅ Stock \`${code}\` added to \`${category}\`.`);
+  }
+
+  if (cmd === '=add') {
+    if (!message.member.permissions.has('ManageGuild')) return message.reply('🚫 You need Manage Server permission.');
+    const command = args[1]?.toLowerCase();
+    const role = message.mentions.roles.first();
+    if (!command || !role) return message.reply('❌ Usage: =add <command> @role');
+    rolesAllowed[command] = role.id;
+    saveData();
+    return message.reply(`✅ Role ${role.name} allowed to use command =${command}`);
+  }
+
+  if (cmd === '=remove') {
+    if (!message.member.permissions.has('ManageGuild')) return message.reply('🚫 You need Manage Server permission.');
+    const command = args[1]?.toLowerCase();
+    if (!command) return message.reply('❌ Usage: =remove <command>');
+    delete rolesAllowed[command];
+    saveData();
+    return message.reply(`✅ Removed role restriction for command =${command}`);
+  }
+
+  if (cmd === '=stock') {
+    const cat = args[1]?.toLowerCase();
+    if (!cat) return message.reply(`📦 Stock:\n${Object.entries(stock).map(([k,v])=>`**${k}**: ${v.length} items`).join('\n')}`);
+    if (!stock[cat]) return message.reply('❌ Category not found.');
+    return message.reply(`📦 Stock for **${cat}**:\n` + stock[cat].join('\n'));
+  }
+
+  if (cmd === '=stockall') {
+    const lines = [];
+    for (const cat in stock) {
+      lines.push(`**${cat}** (${stock[cat].length} items):\n${stock[cat].join('\n') || 'Empty'}`);
+    }
+    return message.reply(lines.join('\n\n'));
+  }
+
+  if (cmd === '=cstock') {
+    updateFileStock();
+    const lines = [];
+    for (const cat in fileStock) {
+      lines.push(`**${cat}**: ${fileStock[cat].length} files`);
+    }
+    return message.reply('🍪 Cookie stock:\n' + lines.join('\n'));
+  }
+
+  if (cmd === '=upload') {
+    if (!AUTHORIZED_USERS.includes(message.author.id)) return message.reply('🚫 Not authorized.');
+
+    if (!message.attachments.size) return message.reply('❌ Please attach a ZIP file.');
+
+    const attachment = message.attachments.first();
+
+    if (!attachment.name.endsWith('.zip')) return message.reply('❌ Only ZIP files allowed.');
+
+    // Download ZIP and save
+    const url = attachment.url;
+    const zipPath = path.join('./', `upload_${Date.now()}.zip`);
+
+    const res = await fetch(url);
+    const buffer = await res.buffer();
+    fs.writeFileSync(zipPath, buffer);
+
+    try {
+      const zip = new AdmZip(zipPath);
+      const extractPath = path.join(COOKIE_DIR, message.author.id);
+      if (!fs.existsSync(extractPath)) fs.mkdirSync(extractPath, { recursive: true });
+      zip.extractAllTo(extractPath, true);
+      fs.unlinkSync(zipPath);
+      updateFileStock();
+      return message.reply(`✅ ZIP uploaded and extracted to your folder (${message.author.id}).`);
+    } catch (err) {
+      fs.unlinkSync(zipPath);
+      return message.reply(`❌ Failed to extract ZIP: ${err.message}`);
+    }
+  }
+
+  if (cmd === '=csend') {
+    if (!message.member.roles.cache.has('1121741911406903376')) return message.reply('🚫 Missing required role.');
+    const user = message.mentions.users.first();
+    if (!user) return message.reply('❌ Mention a user to send cookie.');
+    const cookieFilePath = path.join(COOKIE_DIR, `${user.id}.txt`);
+    if (!fs.existsSync(cookieFilePath)) return message.reply('❌ Cookie file does not exist.');
+
+    const attachment = new AttachmentBuilder(cookieFilePath);
+    await message.channel.send({ content: `Here is the cookie file for ${user.tag}`, files: [attachment] });
+
+    // Delete file after sending
+    fs.unlinkSync(cookieFilePath);
+    return message.reply('✅ Cookie file sent and deleted.');
+  }
+
+  if (cmd === '=redeem') {
+    if (!AUTHORIZED_USERS.includes(message.author.id)) return message.reply('🚫 Not authorized.');
+    const name = args[1];
+    if (!name) return message.reply('❌ Provide a stock name to redeem.');
+
+    if (redeemed[name]) return message.reply('❌ Stock name already redeemed.');
+    redeemed[name] = message.author.id;
+    saveData();
+    return message.reply(`✅ Redeemed stock name: ${name}`);
+  }
+
+  if (cmd === '=debug') {
+    if (message.author.id !== OWNER_ID) return;
+    return message.channel.send(
+      `Roles Allowed: ${JSON.stringify(rolesAllowed)}\nStock: ${JSON.stringify(stock)}\nRedeemed: ${JSON.stringify(redeemed)}\nFile Stock: ${JSON.stringify(fileStock)}`
+    );
+  }
 });
 
+// Login
 client.login(TOKEN);
 
+// index.js
+
+const { Client, GatewayIntentBits } = require('discord.js');
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent
+    // Add only the intents you’ve enabled in your bot settings!
+  ]
+});
+
+client.on('ready', () => {
+  console.log(`Logged in as ${client.user.tag}`);
+});
+
+client.login(process.env.TOKEN); // Use environment variable for security
+
+// --- 👇 ADD THIS EXPRESS SERVER CODE AT THE BOTTOM ---
 
 const express = require('express');
 const app = express();
@@ -217,3 +377,4 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Web server running on port ${PORT}`);
 });
+
