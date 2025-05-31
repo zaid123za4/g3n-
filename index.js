@@ -4,9 +4,10 @@ const path = require('path');
 const crypto = require('crypto');
 const AdmZip = require('adm-zip');
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
+const express = require('express');
 
 // === Config & Constants ===
-const TOKEN = process.env.TOKEN || 'YOUR_BOT_TOKEN'; // Replace with your token or use env
+const TOKEN = process.env.TOKEN || 'YOUR_BOT_TOKEN'; // Use env or fallback
 const OWNER_ID = '1110864648787480656';
 const AUTHORIZED_USERS = ['1110864648787480656', '1212961835582623755', '1333798275601662056'];
 
@@ -25,6 +26,20 @@ let stock = {};
 let redeemed = {};
 let fileStock = {};
 
+// --- Redeemable codes (in-memory) ---
+const redeemableCodes = {};
+
+// --- Generate a random 6-character hex code ---
+function generateHexCode() {
+  return Math.random().toString(16).substring(2, 8).toUpperCase();
+}
+// Generate 5 random codes on startup
+for (let i = 0; i < 5; i++) {
+  const code = generateHexCode();
+  redeemableCodes[code] = false; // false = not redeemed
+  console.log(`Generated code: ${code}`);
+}
+
 // === Helper functions for data persistence ===
 function loadJSON(filepath, defaultValue = {}) {
   if (!fs.existsSync(filepath)) return defaultValue;
@@ -37,15 +52,13 @@ function loadJSON(filepath, defaultValue = {}) {
 function saveJSON(filepath, data) {
   fs.writeFileSync(filepath, JSON.stringify(data, null, 2));
 }
-
-// Vouches
+// Vouches function
 function loadVouches() {
   return loadJSON(VOUCH_PATH);
 }
 function saveVouches(data) {
   saveJSON(VOUCH_PATH, data);
 }
-
 // Cookie data
 function loadData() {
   stock = loadJSON(path.join(DATA_DIR, 'stock.json'));
@@ -57,7 +70,6 @@ function saveData() {
   saveJSON(path.join(DATA_DIR, 'redeemed.json'), redeemed);
   saveJSON(path.join(DATA_DIR, 'roles.json'), rolesAllowed);
 }
-
 // Update file stock from cookie folder structure
 function updateFileStock() {
   fileStock = {};
@@ -122,7 +134,6 @@ function createDynamicCommand(category) {
     msg.reply(`✅ Generated stock: \`${item}\``);
   });
 }
-
 // Load dynamic commands for all categories on startup
 for (const category of Object.keys(stock)) {
   createDynamicCommand(category);
@@ -214,7 +225,8 @@ client.on('messageCreate', async (message) => {
 
   // ----- Cookie / Stock Management commands -----
   if (cmd === '=addcategory') {
-    if (!message.member.permissions.has('ManageGuild')) return message.reply('🚫 You need Manage Server permission.');
+    if (!message.member.permissions.has('ManageGuild'))
+      return message.reply('🚫 You need Manage Server permission.');
     const name = args[1]?.toLowerCase();
     if (!name) return message.reply('❌ Provide a category name.');
     if (stock[name]) return message.reply('❌ Category already exists.');
@@ -225,7 +237,8 @@ client.on('messageCreate', async (message) => {
   }
 
   if (cmd === '=addstock') {
-    if (!message.member.permissions.has('ManageGuild')) return message.reply('🚫 You need Manage Server permission.');
+    if (!message.member.permissions.has('ManageGuild'))
+      return message.reply('🚫 You need Manage Server permission.');
     const category = args[1]?.toLowerCase();
     const code = args.slice(2).join(' ');
     if (!category || !code) return message.reply('❌ Usage: =addstock <category> <stock_name>');
@@ -236,7 +249,8 @@ client.on('messageCreate', async (message) => {
   }
 
   if (cmd === '=add') {
-    if (!message.member.permissions.has('ManageGuild')) return message.reply('🚫 You need Manage Server permission.');
+    if (!message.member.permissions.has('ManageGuild'))
+      return message.reply('🚫 You need Manage Server permission.');
     const command = args[1]?.toLowerCase();
     const role = message.mentions.roles.first();
     if (!command || !role) return message.reply('❌ Usage: =add <command> @role');
@@ -246,7 +260,8 @@ client.on('messageCreate', async (message) => {
   }
 
   if (cmd === '=remove') {
-    if (!message.member.permissions.has('ManageGuild')) return message.reply('🚫 You need Manage Server permission.');
+    if (!message.member.permissions.has('ManageGuild'))
+      return message.reply('🚫 You need Manage Server permission.');
     const command = args[1]?.toLowerCase();
     if (!command) return message.reply('❌ Usage: =remove <command>');
     delete rolesAllowed[command];
@@ -256,7 +271,12 @@ client.on('messageCreate', async (message) => {
 
   if (cmd === '=stock') {
     const cat = args[1]?.toLowerCase();
-    if (!cat) return message.reply(`📦 Stock:\n${Object.entries(stock).map(([k,v])=>`**${k}**: ${v.length} items`).join('\n')}`);
+    if (!cat)
+      return message.reply(
+        `📦 Stock:\n${Object.entries(stock)
+          .map(([k, v]) => `**${k}**: ${v.length} items`)
+          .join('\n')}`
+      );
     if (!stock[cat]) return message.reply('❌ Category not found.');
     return message.reply(`📦 Stock for **${cat}**:\n` + stock[cat].join('\n'));
   }
@@ -310,7 +330,8 @@ client.on('messageCreate', async (message) => {
   }
 
   if (cmd === '=csend') {
-    if (!message.member.roles.cache.has('1121741911406903376')) return message.reply('🚫 Missing required role.');
+    if (!message.member.roles.cache.has('1121741911406903376'))
+      return message.reply('🚫 Missing required role.');
     const user = message.mentions.users.first();
     if (!user) return message.reply('❌ Mention a user to send cookie.');
     const cookieFilePath = path.join(COOKIE_DIR, `${user.id}.txt`);
@@ -324,57 +345,49 @@ client.on('messageCreate', async (message) => {
     return message.reply('✅ Cookie file sent and deleted.');
   }
 
+  // === REDEEM COMMAND MERGED ===
+  // Check for redeem command
   if (cmd === '=redeem') {
-    if (!AUTHORIZED_USERS.includes(message.author.id)) return message.reply('🚫 Not authorized.');
-    const name = args[1];
-    if (!name) return message.reply('❌ Provide a stock name to redeem.');
+    const code = args[1]?.toUpperCase();
+    if (!code) {
+      return message.reply('❌ Please provide a stock name or redeem code.');
+    }
 
-    if (redeemed[name]) return message.reply('❌ Stock name already redeemed.');
-    redeemed[name] = message.author.id;
+    // First check in-memory redeemableCodes
+    if (code in redeemableCodes) {
+      if (redeemableCodes[code]) {
+        return message.reply('⚠️ This code has already been redeemed.');
+      }
+      // Mark code as redeemed
+      redeemableCodes[code] = true;
+      // You can add reward logic here
+      return message.reply(`✅ Code **${code}** redeemed successfully!`);
+    }
+
+    // Else fallback to your original redeemed stock system
+    if (!AUTHORIZED_USERS.includes(message.author.id)) return message.reply('🚫 Not authorized.');
+
+    if (redeemed[code]) return message.reply('❌ Stock name already redeemed.');
+
+    redeemed[code] = message.author.id;
     saveData();
-    return message.reply(`✅ Redeemed stock name: ${name}`);
+    return message.reply(`✅ Redeemed stock name: ${code}`);
   }
 
   if (cmd === '=debug') {
     if (message.author.id !== OWNER_ID) return;
     return message.channel.send(
-      `Roles Allowed: ${JSON.stringify(rolesAllowed)}\nStock: ${JSON.stringify(stock)}\nRedeemed: ${JSON.stringify(redeemed)}\nFile Stock: ${JSON.stringify(fileStock)}`
+      `Roles Allowed: ${JSON.stringify(rolesAllowed)}\nStock: ${JSON.stringify(
+        stock
+      )}\nRedeemed: ${JSON.stringify(redeemed)}\nFile Stock: ${JSON.stringify(fileStock)}`
     );
   }
 });
 
-// Login
+// === Login ===
 client.login(TOKEN);
 
-// index.js
-
-const { Client, GatewayIntentBits } = require('discord.js');
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
-    // Add only the intents you’ve enabled in your bot settings!
-  ]
-});
-
-client.on('ready', () => {
-  console.log(`Logged in as ${client.user.tag}`);
-});
-
-client.login(process.env.TOKEN); // Use environment variable for security
-
-// --- 👇 ADD THIS EXPRESS SERVER CODE AT THE BOTTOM ---
-
-const express = require('express');
+// === Express server to keep bot alive ===
 const app = express();
-
-app.get('/', (req, res) => {
-  res.send('Nova bot is running!');
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Web server running on port ${PORT}`);
-});
-
+app.get('/', (req, res) => res.send('Bot is running'));
+app.listen(3000, () => console.log('Express server listening on port 3000'));
