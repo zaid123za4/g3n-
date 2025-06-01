@@ -720,7 +720,7 @@ client.on('messageCreate', async (message) => {
     // === =pls command - NOW A FRIENDLY VOUCH REMINDER ===
     if (cmd === '=pls') {
         embed.setTitle('Cheers for our staff! 🎉')
-             .setDescription(`Share the love with **+vouch @user** in the vouching channel <#${VOUCH_CHANNEL_ID || '1374018342444204067'}>. Your appreciation brightens our day!`)
+             .setDescription(`Share the love with **+vouch @user** in the vouching channel <#${1374018342444204067 || '1374018342444204067'}>. Your appreciation brightens our day!`)
              .addFields(
                  { name: 'Not Satisfied?', value: 'If you\'re not satisfied, type `-vouch @user <reason>` to provide private feedback.', inline: false }
              )
