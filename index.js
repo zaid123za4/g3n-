@@ -430,7 +430,7 @@ client.on('messageCreate', async (message) => {
         }
     }
 
-    // === =stockall command - NOW WITH IMAGE-LIKE FORMATTING ===
+    // === =stock command - NOW WITH IMAGE-LIKE FORMATTING ===
     if (cmd === '=stock') {
         const allCategories = Object.keys(stock);
         if (allCategories.length === 0) {
@@ -477,7 +477,7 @@ client.on('messageCreate', async (message) => {
     }
 
 
-    if (cmd === '=stock') {
+    if (cmd === '=stockall') {
         const allCategories = Object.keys(stock);
         if (allCategories.length === 0) {
             embed.setTitle('No Stock 📦')
