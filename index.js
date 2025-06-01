@@ -11,6 +11,7 @@ const TOKEN = process.env.TOKEN || 'YOUR_BOT_TOKEN'; // Use env or fallback
 const OWNER_ID = '1110864648787480656';
 const AUTHORIZED_USERS = ['1110864648787480656', '1212961835582623755', '1333798275601662056']; // Example IDs
 const CSEND_REQUIRED_ROLE_ID = '1374250200511680582'; // Example Role ID for =csend command
+const VOUCH_CHANNEL_ID = 'YOUR_VOUCH_CHANNEL_ID'; // <--- IMPORTANT: SET YOUR VOUCH CHANNEL ID HERE
 
 const DATA_DIR = './data';
 const COOKIE_DIR = './cookies';
@@ -388,12 +389,10 @@ client.on('messageCreate', async (message) => {
             return message.reply({ embeds: [embed] });
         }
 
-        // Validate if it's a known command that can be restricted (e.g., gen commands)
-        // For simplicity, we assume dynamic commands are the primary ones to restrict.
-        // You could add a list of other restrictable commands if needed.
-        if (!dynamicCommands.has(commandToRestrict) && commandToRestrict !== 'csend') {
+        // Validate if it's a known command that can be restricted (e.g., gen commands, csend)
+        if (!dynamicCommands.has(commandToRestrict) && commandToRestrict !== 'csend' && commandToRestrict !== 'addcategory' && commandToRestrict !== 'addstock' && commandToRestrict !== 'removestock' && commandToRestrict !== 'add' && commandToRestrict !== 'remove' && commandToRestrict !== 'upload' && commandToRestrict !== 'pls') {
             embed.setTitle('Invalid Command ⚠️')
-                 .setDescription(`Command \`=${commandToRestrict}\` is not a recognized dynamic generation command or a general restrictable command.`);
+                 .setDescription(`Command \`=${commandToRestrict}\` is not a recognized command that can be restricted. Dynamic commands (like \`fgen\`, \`agen\`), \`csend\`, \`addcategory\`, \`addstock\`, \`removestock\`, \`add\`, \`remove\`, \`upload\`, and \`pls\` can be restricted.`);
             return message.reply({ embeds: [embed] });
         }
 
@@ -433,68 +432,48 @@ client.on('messageCreate', async (message) => {
 
     // === =stock command - NOW WITH IMAGE-LIKE FORMATTING ===
     if (cmd === '=stock') {
-        embed.setTitle('📦 Current Stock Overview')
-             .setColor(0x0099ff); // A nice blue for stock
-
         const allCategories = Object.keys(stock);
         if (allCategories.length === 0) {
-            embed.setDescription('No stock categories have been added yet.');
+            embed.setTitle('No Stock 📦')
+                 .setDescription('No stock categories have been added yet.')
+                 .setColor(0x0099ff);
             return message.reply({ embeds: [embed] });
         }
 
-        const maxFields = 25; // Discord embed field limit
-        let currentFieldCount = 0;
-        let replyEmbeds = [];
-        let tempEmbed = new EmbedBuilder().setTitle('📦 Current Stock Overview (Page 1)').setColor(0x0099ff);
-
-        for (const category of allCategories) {
-            const items = stock[category];
-            const stockCount = items.length;
-            const fieldValue = stockCount > 0 ? `${stockCount} items` : 'Empty';
-
-            // Add field to the current temporary embed
-            if (currentFieldCount < maxFields) {
-                tempEmbed.addFields({ name: category.toUpperCase(), value: fieldValue, inline: true });
-                currentFieldCount++;
-            } else {
-                // If current embed is full, push it and start a new one
-                replyEmbeds.push(tempEmbed);
-                tempEmbed = new EmbedBuilder().setTitle(`📦 Current Stock Overview (Page ${replyEmbeds.length + 1})`).setColor(0x0099ff);
-                tempEmbed.addFields({ name: category.toUpperCase(), value: fieldValue, inline: true });
-                currentFieldCount = 1;
-            }
-        }
-        // Push the last temporary embed if it has content
-        if (currentFieldCount > 0) {
-            replyEmbeds.push(tempEmbed);
-        }
-
-        // If a specific category was requested (e.g., =stock free)
+        // Handle specific category request
         const cat = args[1]?.toLowerCase();
         if (cat) {
             if (stock[cat]) {
                 const categoryItems = stock[cat];
                 embed.setTitle(`📦 Stock for **${cat.toUpperCase()}** (${categoryItems.length} items)`)
-                     .setDescription(categoryItems.length > 0 ? categoryItems.map(item => `\`${item}\``).join(', ') : 'This category is empty.');
+                     .setDescription(categoryItems.length > 0 ? categoryItems.map(item => `\`${item}\``).join(', ') : 'This category is empty.')
+                     .setColor(0x0099ff);
                 return message.reply({ embeds: [embed] });
             } else {
                 embed.setTitle('Category Not Found ❌')
-                     .setDescription(`The category \`${cat}\` does not exist.`);
+                     .setDescription(`The category \`${cat}\` does not exist.`)
+                     .setColor(0xe74c3c);
                 return message.reply({ embeds: [embed] });
             }
         }
 
-        // Send all generated embeds
-        if (replyEmbeds.length > 0) {
-            for (const replyEmbed of replyEmbeds) {
-                await message.channel.send({ embeds: [replyEmbed] });
-            }
-        } else {
-             // This case should ideally be caught by the initial allCategories.length === 0 check, but as a fallback
-            embed.setDescription('No stock categories have been added yet.');
-            return message.reply({ embeds: [embed] });
+        // Default: display all stock categories like the image
+        const replyEmbed = new EmbedBuilder()
+            .setTitle('📦 Current Stock Overview')
+            .setColor(0x2c3e50); // Darker color for the overall stock embed
+
+        // Sort categories alphabetically for consistent display
+        const sortedCategories = allCategories.sort();
+
+        // Dynamically add fields for each stock category
+        for (const category of sortedCategories) {
+            const items = stock[category];
+            const stockCount = items.length;
+            const fieldValue = stockCount > 0 ? `**${stockCount}** items` : '*Empty*';
+            replyEmbed.addFields({ name: category.toUpperCase(), value: fieldValue, inline: true });
         }
-        return; // Important to return here to avoid further replies
+
+        return message.channel.send({ embeds: [replyEmbed] });
     }
 
 
@@ -502,7 +481,8 @@ client.on('messageCreate', async (message) => {
         const allCategories = Object.keys(stock);
         if (allCategories.length === 0) {
             embed.setTitle('No Stock 📦')
-                 .setDescription('There are no stock categories to display.');
+                 .setDescription('There are no stock categories to display.')
+                 .setColor(0x0099ff);
             return message.reply({ embeds: [embed] });
         }
 
@@ -510,21 +490,32 @@ client.on('messageCreate', async (message) => {
         let currentEmbed = new EmbedBuilder()
             .setTitle('📦 All Stock Details')
             .setColor(0x0099ff);
+        let fieldCounter = 0; // To keep track of fields per embed
 
-        for (const cat of allCategories) {
+        // Sort categories alphabetically for consistent display
+        const sortedCategories = allCategories.sort();
+
+        for (const cat of sortedCategories) {
             const items = stock[cat];
-            const content = items.length > 0 ? items.map(item => `\`${item}\``).join(', ') : 'Empty';
-            
-            // Discord field value limit is 1024 characters.
-            // Split if content is too long.
-            if (content.length > 1000) { // A bit less than 1024 for safety
+            const content = items.length > 0 ? items.map(item => `\`${item}\``).join(', ') : '*Empty*';
+
+            // Split content if too long for a single field
+            if (content.length > 1000) {
                 const parts = content.match(/[\s\S]{1,1000}/g) || [];
                 for (let i = 0; i < parts.length; i++) {
                     currentEmbed.addFields({
-                        name: i === 0 ? `${cat.toUpperCase()} (${items.length} items)` : '\u200b', // \u200b is a zero-width space
+                        name: i === 0 ? `${cat.toUpperCase()} (${items.length} items)` : '\u200b', // Use zero-width space for subsequent parts
                         value: parts[i],
                         inline: false
                     });
+                    fieldCounter++;
+                    if (fieldCounter >= 24) { // Max 25 fields, leave one for title/description if needed
+                        replyEmbeds.push(currentEmbed);
+                        currentEmbed = new EmbedBuilder()
+                            .setTitle('📦 All Stock Details (Continued)')
+                            .setColor(0x0099ff);
+                        fieldCounter = 0;
+                    }
                 }
             } else {
                  currentEmbed.addFields({
@@ -532,15 +523,14 @@ client.on('messageCreate', async (message) => {
                     value: content,
                     inline: false
                 });
-            }
-
-            // Check if embed is getting too large (approx 6000 char total or 25 fields)
-            // This is a rough estimation. For perfect handling, check embed.length after adding.
-            if (currentEmbed.data.fields && currentEmbed.data.fields.length >= 20) { // Limit fields per embed
-                replyEmbeds.push(currentEmbed);
-                currentEmbed = new EmbedBuilder()
-                    .setTitle('📦 All Stock Details (Cont.)')
-                    .setColor(0x0099ff);
+                fieldCounter++;
+                if (fieldCounter >= 24) {
+                    replyEmbeds.push(currentEmbed);
+                    currentEmbed = new EmbedBuilder()
+                        .setTitle('📦 All Stock Details (Continued)')
+                        .setColor(0x0099ff);
+                    fieldCounter = 0;
+                }
             }
         }
         replyEmbeds.push(currentEmbed); // Add the last embed
@@ -562,7 +552,10 @@ client.on('messageCreate', async (message) => {
             return message.reply({ embeds: [embed] });
         }
 
-        for (const category of cookieCategories) {
+        // Sort categories alphabetically for consistent display
+        const sortedCookieCategories = cookieCategories.sort();
+
+        for (const category of sortedCookieCategories) {
             const fileCount = fileStock[category].length;
             embed.addFields({ name: category.toUpperCase(), value: `${fileCount} files`, inline: true });
         }
@@ -605,15 +598,14 @@ client.on('messageCreate', async (message) => {
             fs.writeFileSync(zipPath, buffer);
 
             const zip = new AdmZip(zipPath);
-            // Extract to a folder named after the user's ID
-            const extractPath = path.join(COOKIE_DIR, message.author.id); // Or could be a category name
+            const extractPath = path.join(COOKIE_DIR, message.author.id); // Extract to a folder named after the user's ID
             if (!fs.existsSync(extractPath)) fs.mkdirSync(extractPath, { recursive: true });
             zip.extractAllTo(extractPath, true); // Overwrite existing files
             fs.unlinkSync(zipPath); // Delete the downloaded zip after extraction
             updateFileStock(); // Update file stock for the bot's internal tracking
 
             embed.setTitle('Upload Successful! ✅')
-                 .setDescription(`Your ZIP file has been uploaded and extracted to your personal cookie folder (${message.author.id}).`);
+                 .setDescription(`Your ZIP file has been uploaded and extracted to your personal cookie folder (${message.author.id}) in the cookie directory.`);
             await statusMessage.edit({ embeds: [embed] });
         } catch (err) {
             console.error('Error during ZIP upload/extraction:', err);
@@ -725,29 +717,16 @@ client.on('messageCreate', async (message) => {
         return message.reply({ embeds: [embed] });
     }
 
-    // === =pls command (remains for admin manual redemption) ===
+    // === =pls command - NOW A FRIENDLY VOUCH REMINDER ===
     if (cmd === '=pls') {
-        if (!AUTHORIZED_USERS.includes(message.author.id)) {
-            embed.setTitle('Authorization Required 🚫')
-                 .setDescription('You are not authorized to use this command.');
-            return message.reply({ embeds: [embed] });
-        }
-        const stockName = args[1];
-        if (!stockName) {
-            embed.setTitle('Invalid Usage ❌')
-                 .setDescription('Usage: `=pls <stock_name>`');
-            return message.reply({ embeds: [embed] });
-        }
-        if (redeemed[stockName]) {
-            embed.setTitle('Stock Name Already Redeemed ❌')
-                 .setDescription(`The stock name \`${stockName}\` has already been redeemed by <@${redeemed[stockName]}>.`);
-            return message.reply({ embeds: [embed] });
-        }
-        redeemed[stockName] = message.author.id;
-        saveData();
-        embed.setTitle('Stock Name Redeemed! ✅')
-             .setDescription(`The stock name \`${stockName}\` has been successfully marked as redeemed.`);
-        return message.reply({ embeds: [embed] });
+        embed.setTitle('Cheers for our staff! 🎉')
+             .setDescription(`Share the love with **+vouch @user** in the vouching channel <#${VOUCH_CHANNEL_ID || 'YOUR_VOUCH_CHANNEL_ID'}>. Your appreciation brightens our day!`)
+             .addFields(
+                 { name: 'Not Satisfied?', value: 'If you\'re not satisfied, type `-vouch @user <reason>` to provide private feedback.', inline: false }
+             )
+             .setColor(0xffa500); // Orange color for positive message
+
+        return message.channel.send({ embeds: [embed] });
     }
 
     // === =debug command ===
