@@ -11,7 +11,7 @@ const TOKEN = process.env.TOKEN || 'YOUR_BOT_TOKEN'; // Use env or fallback
 const OWNER_ID = '1110864648787480656';
 const AUTHORIZED_USERS = ['1110864648787480656', '1212961835582623755', '1333798275601662056']; // Example IDs
 const CSEND_REQUIRED_ROLE_ID = '1374250200511680582'; // Example Role ID for =csend command
-const VOUCH_CHANNEL_ID = 'YOUR_VOUCH_CHANNEL_ID'; // <--- IMPORTANT: SET YOUR VOUCH CHANNEL ID HERE
+const VOUCH_CHANNEL_ID = '1374018342444204067'; // <--- IMPORTANT: SET YOUR VOUCH CHANNEL ID HERE (Updated)
 
 const DATA_DIR = './data';
 const COOKIE_DIR = './cookies';
@@ -28,8 +28,8 @@ if (!fs.existsSync(VOUCH_PATH)) {
 
 // === Global data stores ===
 let rolesAllowed = {}; // { commandName: roleId }
-let stock = {};       // { category: [item1, item2, ...] }
-let redeemed = {};    // { stockName: userId } (for manually redeemed stock names)
+let stock = {};        // { category: [item1, item2, ...] }
+let redeemed = {};     // { stockName: userId } (for manually redeemed stock names)
 
 // Stores generated unique codes: { hexCode: { redeemed: boolean, category: string, stockName: string, generatedBy: string, timestamp: string } }
 const generatedCodes = {}; // In-memory for current session
@@ -720,62 +720,12 @@ client.on('messageCreate', async (message) => {
     // === =pls command - NOW A FRIENDLY VOUCH REMINDER ===
     if (cmd === '=pls') {
         embed.setTitle('Cheers for our staff! 🎉')
-             .setDescription(`Share the love with **+vouch @user** in the vouching channel <#${1374018342444204067 || '1374018342444204067'}>. Your appreciation brightens our day!`)
+             .setDescription(`Share the love with **+vouch @user** in the vouching channel <#${VOUCH_CHANNEL_ID}>. Your appreciation brightens our day!`)
              .addFields(
                  { name: 'Not Satisfied?', value: 'If you\'re not satisfied, type `-vouch @user <reason>` to provide private feedback.', inline: false }
-             )
-             .setColor(0xffa500); // Orange color for positive message
-
+             );
         return message.channel.send({ embeds: [embed] });
-    }
-
-    // === =debug command ===
-    if (cmd === '=debug') {
-        if (message.author.id !== OWNER_ID) {
-            embed.setTitle('Owner Only Command 🚫')
-                 .setDescription('This command can only be used by the bot owner.');
-            return message.reply({ embeds: [embed] });
-        }
-        const debugEmbed = new EmbedBuilder()
-            .setTitle('Bot Debug Information')
-            .setColor(0x8e44ad) // Purple
-            .setDescription('Current internal state of the bot data. (Truncated for Discord character limits)');
-
-        // Prepare fields, ensuring they don't exceed Discord's limits
-        const rolesAllowedStr = JSON.stringify(rolesAllowed, null, 2);
-        const stockStr = JSON.stringify(stock, null, 2);
-        const redeemedStr = JSON.stringify(redeemed, null, 2);
-        const generatedCodesStr = JSON.stringify(generatedCodes, null, 2);
-        const fileStockStr = JSON.stringify(fileStock, null, 2);
-
-        // Function to split large strings for embed fields
-        const splitStringForEmbed = (str, fieldName) => {
-            const maxLen = 1000; // A bit less than 1024 for safety
-            const parts = [];
-            for (let i = 0; i < str.length; i += maxLen) {
-                parts.push(str.substring(i, Math.min(i + maxLen, str.length)));
-            }
-            return parts.map((part, index) => ({
-                name: index === 0 ? fieldName : '\u200b', // Use zero-width space for subsequent parts
-                value: `\`\`\`json\n${part}\n\`\`\``,
-                inline: false
-            }));
-        };
-
-        debugEmbed.addFields(...splitStringForEmbed(rolesAllowedStr, 'Roles Allowed'));
-        debugEmbed.addFields(...splitStringForEmbed(stockStr, 'Stock Data'));
-        debugEmbed.addFields(...splitStringForEmbed(redeemedStr, 'Manually Redeemed'));
-        debugEmbed.addFields(...splitStringForEmbed(generatedCodesStr, 'Generated Codes (in-memory)'));
-        debugEmbed.addFields(...splitStringForEmbed(fileStockStr, 'File Stock'));
-
-        return message.channel.send({ embeds: [debugEmbed] });
     }
 });
 
-// === Login ===
 client.login(TOKEN);
-
-// === Express server to keep bot alive ===
-const app = express();
-app.get('/', (req, res) => res.send('Bot is running'));
-app.listen(3000, () => console.log('Express server listening on port 3000'));
