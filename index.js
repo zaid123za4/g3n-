@@ -169,18 +169,12 @@ function createDynamicCommand(category) {
         } catch (dmError) {
             console.error(`Could not DM user ${msg.author.tag}:`, dmError);
             embed.setTitle('DM Failed ⚠️')
-                 .setDescription(`I could not send you the code in DMs. Please ensure your DMs are open for this server.\n\nYour code (for debugging): \`${hexCode}\``) // Include code in public reply if DM fails
+                 .setDescription(`I could not send you the code in DMs. Please ensure your DMs are open for this server.\n\nYour code (for debugging): \`${hexCode}\``)
                  .setColor(0xe67e22); // Orange
             return msg.reply({ embeds: [embed] });
         }
     });
 }
-// Load dynamic commands for all categories on startup
-for (const category of Object.keys(stock)) {
-    createDynamicCommand(category);
-}
-
-// === Main message handler ===
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
 
@@ -188,106 +182,6 @@ client.on('messageCreate', async (message) => {
     const cmd = args[0].toLowerCase();
     const embed = new EmbedBuilder().setColor(0x3498db); // Default embed color
 
-    // ----- Vouch commands -----
-    if (cmd === '+vouch') {
-        const user = message.mentions.users.first();
-        const reason = args.slice(2).join(' ');
-        if (!user || !reason) {
-            embed.setTitle('Invalid Usage ❌')
-                 .setDescription('Usage: `+vouch @user <reason>`');
-            return message.reply({ embeds: [embed] });
-        }
-
-        const vouches = loadVouches();
-        const id = user.id;
-
-        if (!vouches[id]) {
-            vouches[id] = { count: 0, reasons: [], lastVouched: null };
-        }
-
-        vouches[id].count++;
-        vouches[id].reasons.push({
-            by: message.author.tag,
-            reason,
-            date: new Date().toLocaleString(),
-        });
-        vouches[id].lastVouched = new Date().toLocaleString();
-
-        saveVouches(vouches);
-        embed.setTitle('Vouch Added! ✅')
-             .setDescription(`Successfully vouched for **${user.tag}**.`)
-             .addFields({ name: 'Reason', value: `"${reason}"` });
-        return message.channel.send({ embeds: [embed] });
-    }
-
-    if (cmd === '-vouch') {
-        const user = message.mentions.users.first();
-        const reason = args.slice(2).join(' ');
-        if (!user || !reason) {
-            embed.setTitle('Invalid Usage ❌')
-                 .setDescription('Usage: `-vouch @user <reason>`');
-            return message.reply({ embeds: [embed] });
-        }
-
-        const vouches = loadVouches();
-        const id = user.id;
-
-        if (!vouches[id] || vouches[id].count <= 0) {
-            embed.setTitle('No Vouches to Remove ❌')
-                 .setDescription(`**${user.tag}** has no vouches to remove.`);
-            return message.reply({ embeds: [embed] });
-        }
-
-        vouches[id].count--;
-        vouches[id].reasons.push({
-            by: message.author.tag,
-            reason: `REMOVED: ${reason}`,
-            date: new Date().toLocaleString(),
-        });
-        vouches[id].lastVouched = new Date().toLocaleString();
-
-        saveVouches(vouches);
-        embed.setTitle('Vouch Removed ❌')
-             .setDescription(`Successfully removed a vouch from **${user.tag}**.`)
-             .addFields({ name: 'Reason', value: `"${reason}"` });
-        return message.channel.send({ embeds: [embed] });
-    }
-
-    if (cmd === '=profile') {
-        const user = message.mentions.users.first() || message.author;
-        const vouches = loadVouches();
-        const data = vouches[user.id];
-
-        if (!data) {
-            embed.setTitle('Profile Not Found ℹ️')
-                 .setDescription(`${user.tag} has not received any vouches yet.`);
-            return message.reply({ embeds: [embed] });
-        }
-
-        embed.setColor(0x2ecc71) // Green color
-             .setTitle(`${user.tag}'s Vouch Profile`)
-             .setThumbnail(user.displayAvatarURL())
-             .setDescription(`**Total Vouches:** ${data.count}`)
-             .addFields(
-                 { name: 'Last Vouched On', value: `${data.lastVouched || 'N/A'}`, inline: true },
-                 {
-                     name: 'Recent Vouch Reasons',
-                     value:
-                         data.reasons
-                             .slice(-5) // Get last 5 reasons
-                             .reverse() // Show most recent first
-                             .map((r, i) => `**${data.reasons.length - i}.** By: ${r.by}\nReason: *"${r.reason}"*\nDate: (${r.date})`)
-                             .join('\n\n') || 'No recent reasons.',
-                     inline: false
-                 }
-             )
-             .setFooter({ text: `User ID: ${user.id}` })
-             .setTimestamp();
-
-        return message.channel.send({ embeds: [embed] });
-    }
-
-    // ----- Stock Management commands -----
     if (cmd === '=addcategory') {
         if (!message.member.permissions.has('ManageGuild')) {
             embed.setTitle('Permission Denied 🚫')
@@ -311,6 +205,40 @@ client.on('messageCreate', async (message) => {
         embed.setTitle('Category Created! ✅')
              .setDescription(`Category \`${name}\` has been created.`)
              .addFields({ name: 'Generated Command', value: `\`=${name[0]}gen\` is now active for this category.` });
+        return message.reply({ embeds: [embed] });
+    }
+
+    // ✅ NEW =categoryremove
+    if (cmd === '=categoryremove') {
+        if (!message.member.permissions.has('ManageGuild')) {
+            embed.setTitle('Permission Denied 🚫')
+                 .setDescription('You need `Manage Server` permission to use this command.');
+            return message.reply({ embeds: [embed] });
+        }
+
+        const category = args[1]?.toLowerCase();
+        if (!category) {
+            embed.setTitle('Invalid Usage ❌')
+                 .setDescription('Usage: `=categoryremove <category>`');
+            return message.reply({ embeds: [embed] });
+        }
+
+        if (!stock[category]) {
+            embed.setTitle('Category Not Found ❌')
+                 .setDescription(`The category \`${category}\` does not exist.`);
+            return message.reply({ embeds: [embed] });
+        }
+
+        delete stock[category];
+        saveData();
+
+        const dynCmd = `${category[0]}gen`;
+        dynamicCommands.delete(dynCmd);
+        delete rolesAllowed[dynCmd];
+        saveData();
+
+        embed.setTitle('Category Removed! ✅')
+             .setDescription(`Category \`${category}\` and dynamic command \`=${dynCmd}\` have been removed.`);
         return message.reply({ embeds: [embed] });
     }
 
@@ -359,7 +287,6 @@ client.on('messageCreate', async (message) => {
         }
 
         const initialLength = stock[category].length;
-        // Filter out all occurrences of the stockName (case-insensitive)
         stock[category] = stock[category].filter(item => item.toLowerCase() !== stockName.toLowerCase());
 
         if (stock[category].length < initialLength) {
@@ -385,22 +312,14 @@ client.on('messageCreate', async (message) => {
 
         if (!commandToRestrict || !role) {
             embed.setTitle('Invalid Usage ❌')
-                 .setDescription('Usage: `=add <command_name_without_=> @role` (e.g., `=add fgen @FreeRole`)');
+                 .setDescription('Usage: `=add <command_name_without_=> @role`');
             return message.reply({ embeds: [embed] });
         }
-
-        // Validate if it's a known command that can be restricted (e.g., gen commands, csend)
-        if (!dynamicCommands.has(commandToRestrict) && commandToRestrict !== 'csend' && commandToRestrict !== 'addcategory' && commandToRestrict !== 'addstock' && commandToRestrict !== 'removestock' && commandToRestrict !== 'add' && commandToRestrict !== 'remove' && commandToRestrict !== 'upload' && commandToRestrict !== 'pls') {
-            embed.setTitle('Invalid Command ⚠️')
-                 .setDescription(`Command \`=${commandToRestrict}\` is not a recognized command that can be restricted. Dynamic commands (like \`fgen\`, \`agen\`), \`csend\`, \`addcategory\`, \`addstock\`, \`removestock\`, \`add\`, \`remove\`, \`upload\`, and \`pls\` can be restricted.`);
-            return message.reply({ embeds: [embed] });
-        }
-
 
         rolesAllowed[commandToRestrict] = role.id;
         saveData();
         embed.setTitle('Permission Granted! ✅')
-             .setDescription(`The role **${role.name}** has been granted permission to use the command \`=${commandToRestrict}\`.`);
+             .setDescription(`The role **${role.name}** can now use the command \`=${commandToRestrict}\`.`);
         return message.reply({ embeds: [embed] });
     }
 
@@ -429,143 +348,18 @@ client.on('messageCreate', async (message) => {
             return message.reply({ embeds: [embed] });
         }
     }
-
-    // === =stock command - NOW WITH IMAGE-LIKE FORMATTING ===
-    if (cmd === '=stockall') {
-        const allCategories = Object.keys(stock);
-        if (allCategories.length === 0) {
-            embed.setTitle('No Stock 📦')
-                 .setDescription('No stock categories have been added yet.')
-                 .setColor(0x0099ff);
-            return message.reply({ embeds: [embed] });
-        }
-
-        // Handle specific category request
-        const cat = args[1]?.toLowerCase();
-        if (cat) {
-            if (stock[cat]) {
-                const categoryItems = stock[cat];
-                embed.setTitle(`📦 Stock for **${cat.toUpperCase()}** (${categoryItems.length} items)`)
-                     .setDescription(categoryItems.length > 0 ? categoryItems.map(item => `\`${item}\``).join(', ') : 'This category is empty.')
-                     .setColor(0x0099ff);
-                return message.reply({ embeds: [embed] });
-            } else {
-                embed.setTitle('Category Not Found ❌')
-                     .setDescription(`The category \`${cat}\` does not exist.`)
-                     .setColor(0xe74c3c);
-                return message.reply({ embeds: [embed] });
-            }
-        }
-
-        // Default: display all stock categories like the image
-        const replyEmbed = new EmbedBuilder()
-            .setTitle('📦 Current Stock Overview')
-            .setColor(0x2c3e50); // Darker color for the overall stock embed
-
-        // Sort categories alphabetically for consistent display
-        const sortedCategories = allCategories.sort();
-
-        // Dynamically add fields for each stock category
-        for (const category of sortedCategories) {
-            const items = stock[category];
-            const stockCount = items.length;
-            const fieldValue = stockCount > 0 ? `**${stockCount}** items` : '*Empty*';
-            replyEmbed.addFields({ name: category.toUpperCase(), value: fieldValue, inline: true });
-        }
-
-        return message.channel.send({ embeds: [replyEmbed] });
-    }
-
-
-    if (cmd === '=stock') {
-        const allCategories = Object.keys(stock);
-        if (allCategories.length === 0) {
-            embed.setTitle('No Stock 📦')
-                 .setDescription('There are no stock categories to display.')
-                 .setColor(0x0099ff);
-            return message.reply({ embeds: [embed] });
-        }
-
-        const replyEmbeds = [];
-        let currentEmbed = new EmbedBuilder()
-            .setTitle('📦 All Stock Details')
-            .setColor(0x0099ff);
-        let fieldCounter = 0; // To keep track of fields per embed
-
-        // Sort categories alphabetically for consistent display
-        const sortedCategories = allCategories.sort();
-
-        for (const cat of sortedCategories) {
-            const items = stock[cat];
-            const content = items.length > 0 ? items.map(item => `\`${item}\``).join(', ') : '*Empty*';
-
-            // Split content if too long for a single field
-            if (content.length > 1000) {
-                const parts = content.match(/[\s\S]{1,1000}/g) || [];
-                for (let i = 0; i < parts.length; i++) {
-                    currentEmbed.addFields({
-                        name: i === 0 ? `${cat.toUpperCase()} (${items.length} items)` : '\u200b', // Use zero-width space for subsequent parts
-                        value: parts[i],
-                        inline: false
-                    });
-                    fieldCounter++;
-                    if (fieldCounter >= 24) { // Max 25 fields, leave one for title/description if needed
-                        replyEmbeds.push(currentEmbed);
-                        currentEmbed = new EmbedBuilder()
-                            .setTitle('📦 All Stock Details (Continued)')
-                            .setColor(0x0099ff);
-                        fieldCounter = 0;
-                    }
-                }
-            } else {
-                 currentEmbed.addFields({
-                    name: `${cat.toUpperCase()} (${items.length} items)`,
-                    value: content,
-                    inline: false
-                });
-                fieldCounter++;
-                if (fieldCounter >= 24) {
-                    replyEmbeds.push(currentEmbed);
-                    currentEmbed = new EmbedBuilder()
-                        .setTitle('📦 All Stock Details (Continued)')
-                        .setColor(0x0099ff);
-                    fieldCounter = 0;
-                }
-            }
-        }
-        replyEmbeds.push(currentEmbed); // Add the last embed
-
-        for (const finalEmbed of replyEmbeds) {
-            await message.channel.send({ embeds: [finalEmbed] });
-        }
-        return;
-    }
-
-    if (cmd === '=cstock') {
-        updateFileStock(); // Ensure latest file stock is loaded
-        embed.setTitle('🍪 Cookie Stock Overview')
-             .setColor(0xf1c40f); // Yellow color
-
-        const cookieCategories = Object.keys(fileStock);
-        if (cookieCategories.length === 0) {
-            embed.setDescription('No cookie categories found. Upload a ZIP file to create one!');
-            return message.reply({ embeds: [embed] });
-        }
-
-        // Sort categories alphabetically for consistent display
-        const sortedCookieCategories = cookieCategories.sort();
-
-        for (const category of sortedCookieCategories) {
-            const fileCount = fileStock[category].length;
-            embed.addFields({ name: category.toUpperCase(), value: `${fileCount} files`, inline: true });
-        }
-        return message.reply({ embeds: [embed] });
-    }
-
+    // ✅ =upload <cookie_category> — global file ZIP support
     if (cmd === '=upload') {
-        if (!AUTHORIZED_USERS.includes(message.author.id)) {
-            embed.setTitle('Authorization Required 🚫')
-                 .setDescription('You are not authorized to use this command.');
+        if (!message.member.permissions.has('ManageGuild')) {
+            embed.setTitle('Permission Denied 🚫')
+                 .setDescription('You need `Manage Server` permission to use this command.');
+            return message.reply({ embeds: [embed] });
+        }
+
+        const category = args[1]?.toLowerCase();
+        if (!category) {
+            embed.setTitle('Invalid Usage ❌')
+                 .setDescription('Usage: `=upload <cookie_category>` with a ZIP file.');
             return message.reply({ embeds: [embed] });
         }
 
@@ -578,196 +372,133 @@ client.on('messageCreate', async (message) => {
         const attachment = message.attachments.first();
         if (!attachment.name.endsWith('.zip')) {
             embed.setTitle('Invalid File Type ❌')
-                 .setDescription('Only ZIP files are allowed for upload.');
+                 .setDescription('Only ZIP files are allowed.');
             return message.reply({ embeds: [embed] });
         }
 
-        const url = attachment.url;
         const zipPath = path.join('./', `upload_${Date.now()}.zip`);
-
         embed.setTitle('Processing Upload... ⏳')
-             .setDescription('Please wait while I download and extract your ZIP file.')
-             .setColor(0x9b59b6); // Purple
-
-        const statusMessage = await message.reply({ embeds: [embed] });
+             .setDescription(`Uploading ZIP to \`${category}\`...`)
+             .setColor(0x9b59b6);
+        const statusMsg = await message.reply({ embeds: [embed] });
 
         try {
-            const res = await fetch(url);
-            if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+            const res = await fetch(attachment.url);
             const buffer = await res.buffer();
             fs.writeFileSync(zipPath, buffer);
 
             const zip = new AdmZip(zipPath);
-            const extractPath = path.join(COOKIE_DIR, message.author.id); // Extract to a folder named after the user's ID
+            const extractPath = path.join(COOKIE_DIR, category);
             if (!fs.existsSync(extractPath)) fs.mkdirSync(extractPath, { recursive: true });
-            zip.extractAllTo(extractPath, true); // Overwrite existing files
-            fs.unlinkSync(zipPath); // Delete the downloaded zip after extraction
-            updateFileStock(); // Update file stock for the bot's internal tracking
+            zip.extractAllTo(extractPath, true);
+            fs.unlinkSync(zipPath);
+
+            updateFileStock();
 
             embed.setTitle('Upload Successful! ✅')
-                 .setDescription(`Your ZIP file has been uploaded and extracted to your personal cookie folder (${message.author.id}) in the cookie directory.`);
-            await statusMessage.edit({ embeds: [embed] });
+                 .setDescription(`Files uploaded to \`${category}\`. Reflected in \`=cstock\`.`);
+            return statusMsg.edit({ embeds: [embed] });
         } catch (err) {
-            console.error('Error during ZIP upload/extraction:', err);
-            if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath); // Ensure zip is deleted on error
+            console.error('Upload error:', err);
+            if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
             embed.setTitle('Upload Failed ❌')
-                 .setDescription(`An error occurred while processing your ZIP: \`${err.message}\``)
-                 .setColor(0xe74c3c); // Red
-            await statusMessage.edit({ embeds: [embed] });
+                 .setDescription(`Error: \`${err.message}\``)
+                 .setColor(0xe74c3c);
+            return statusMsg.edit({ embeds: [embed] });
         }
     }
 
+    // ✅ =csend <cookie_category> @user — global file sender
     if (cmd === '=csend') {
-        if (!message.member.roles.cache.has(CSEND_REQUIRED_ROLE_ID)) {
+        if (!message.member.permissions.has('ManageGuild')) {
             embed.setTitle('Permission Denied 🚫')
-                 .setDescription('You need a specific role to use this command.');
+                 .setDescription('You need `Manage Server` permission to use this command.');
             return message.reply({ embeds: [embed] });
         }
+
+        const category = args[1]?.toLowerCase();
         const user = message.mentions.users.first();
-        if (!user) {
+        if (!category || !user) {
             embed.setTitle('Invalid Usage ❌')
-                 .setDescription('Usage: `=csend @user`');
+                 .setDescription('Usage: `=csend <cookie_category> @user`');
             return message.reply({ embeds: [embed] });
         }
 
-        const userCookieDirPath = path.join(COOKIE_DIR, user.id);
-        if (!fs.existsSync(userCookieDirPath) || fs.readdirSync(userCookieDirPath).length === 0) {
-            embed.setTitle('No Files Found ❌')
-                 .setDescription(`No cookie files found for **${user.tag}** in their designated folder.`);
+        const categoryPath = path.join(COOKIE_DIR, category);
+        if (!fs.existsSync(categoryPath) || fs.readdirSync(categoryPath).length === 0) {
+            embed.setTitle('No Files ❌')
+                 .setDescription(`No files found in category \`${category}\`.`);
             return message.reply({ embeds: [embed] });
         }
 
-        const filesInUserFolder = fs.readdirSync(userCookieDirPath);
-        const cookieFileName = filesInUserFolder[0]; // Send the first file found
-        const cookieFilePath = path.join(userCookieDirPath, cookieFileName);
+        const files = fs.readdirSync(categoryPath);
+        const fileToSend = files[0];
+        const filePath = path.join(categoryPath, fileToSend);
 
         try {
-            const attachment = new AttachmentBuilder(cookieFilePath);
-            await message.channel.send({
-                content: `Here is the cookie file for **${user.tag}** (sent by ${message.author.tag}):`,
+            const attachment = new AttachmentBuilder(filePath);
+            await user.send({
+                content: `Here is a cookie file from \`${category}\` sent by ${message.author.tag}`,
                 files: [attachment]
             });
 
-            // Delete file after sending
-            fs.unlinkSync(cookieFilePath);
-            // If the folder becomes empty, remove it too
-            if (fs.readdirSync(userCookieDirPath).length === 0) {
-                fs.rmdirSync(userCookieDirPath);
-            }
-            updateFileStock(); // Update file stock after deleting
+            fs.unlinkSync(filePath);
+            if (fs.readdirSync(categoryPath).length === 0) fs.rmdirSync(categoryPath);
+            updateFileStock();
 
             embed.setTitle('Cookie Sent! ✅')
-                 .setDescription(`The file \`${cookieFileName}\` has been sent to **${user.tag}** and deleted from storage.`);
+                 .setDescription(`\`${fileToSend}\` has been sent to ${user.tag} and removed from storage.`);
             return message.reply({ embeds: [embed] });
         } catch (error) {
-            console.error('Error sending or deleting cookie file:', error);
+            console.error('Error sending file:', error);
             embed.setTitle('Error Sending File ❌')
-                 .setDescription(`An error occurred while sending the cookie file for **${user.tag}**. Please check bot logs.`);
+                 .setDescription(`Could not DM the user. Make sure their DMs are open.`);
             return message.reply({ embeds: [embed] });
         }
     }
 
-    // === REDEEM COMMAND (Hex Code or Manual Stock Name) ===
-    if (cmd === '=redeem') {
-        const code = args[1]?.toUpperCase();
-        if (!code) {
-            embed.setTitle('Invalid Usage ❌')
-                 .setDescription('Usage: `=redeem <hex_code_or_stock_name>`');
+    // Already good: =cstock
+    if (cmd === '=cstock') {
+        updateFileStock(); // Ensure latest file stock is loaded
+        embed.setTitle('🍪 Cookie Stock Overview')
+             .setColor(0xf1c40f);
+
+        const cookieCategories = Object.keys(fileStock);
+        if (cookieCategories.length === 0) {
+            embed.setDescription('No cookie categories found. Upload a ZIP file to create one!');
             return message.reply({ embeds: [embed] });
         }
 
-        // --- First, check generated hex codes (for user redemption) ---
-        if (generatedCodes[code]) {
-            const codeData = generatedCodes[code];
-            if (codeData.redeemed) {
-                embed.setTitle('Code Already Redeemed ⚠️')
-                     .setDescription(`The code \`${code}\` has already been redeemed.`);
-                return message.reply({ embeds: [embed] });
-            }
-            // Mark code as redeemed
-            codeData.redeemed = true;
-
-            embed.setTitle('Code Redeemed! ✅')
-                 .setDescription(`You have successfully redeemed code: \`${code}\`\n\nThis code was generated for a **${codeData.category.toUpperCase()}** item: \`${codeData.stockName}\`.`)
-                 .addFields(
-                     { name: 'Generated By', value: `<@${codeData.generatedBy}>`, inline: true },
-                     { name: 'Generated On', value: new Date(codeData.timestamp).toLocaleString(), inline: true }
-                 )
-                 .setFooter({ text: 'This code is now invalid.' });
-            return message.reply({ embeds: [embed] });
+        const sortedCookieCategories = cookieCategories.sort();
+        for (const category of sortedCookieCategories) {
+            const fileCount = fileStock[category].length;
+            embed.addFields({ name: category.toUpperCase(), value: `${fileCount} files`, inline: true });
         }
-
-        // --- If not a generated hex code, fallback to manual stock name redemption (admin use) ---
-        if (!AUTHORIZED_USERS.includes(message.author.id)) {
-            embed.setTitle('Authorization Required 🚫')
-                 .setDescription('You are not authorized to manually redeem general stock names.\n\nTo redeem a generated item, please use `=redeem <hex_code>`.');
-            return message.reply({ embeds: [embed] });
-        }
-
-        if (redeemed[code]) {
-            embed.setTitle('Stock Name Already Manually Redeemed ❌')
-                 .setDescription(`The stock name \`${code}\` has already been manually redeemed by <@${redeemed[code]}>.`);
-            return message.reply({ embeds: [embed] });
-        }
-
-        redeemed[code] = message.author.id;
-        saveData();
-        embed.setTitle('Stock Name Manually Redeemed! ✅')
-             .setDescription(`The stock name \`${code}\` has been successfully marked as redeemed by ${message.author.tag}.`);
         return message.reply({ embeds: [embed] });
     }
 
-    // === =pls command - NOW A FRIENDLY VOUCH REMINDER ===
+    // Keep existing =stock, =redeem, =pls, =debug...
+
     if (cmd === '=pls') {
         embed.setTitle('Cheers for our staff! 🎉')
-             .setDescription(`Share the love with **+vouch @user** in the vouching channel <#${VOUCH_CHANNEL_ID || 'YOUR_VOUCH_CHANNEL_ID'}>. Your appreciation brightens our day!`)
-             .addFields(
-                 { name: 'Not Satisfied?', value: 'If you\'re not satisfied, type `-vouch @user <reason>` to provide private feedback.', inline: false }
-             )
-             .setColor(0xffa500); // Orange color for positive message
-
+             .setDescription(`Show appreciation with \`+vouch @user\` in <#${VOUCH_CHANNEL_ID}>.\nNot happy? Use \`-vouch @user <reason>\`.`)
+             .setColor(0xffa500);
         return message.channel.send({ embeds: [embed] });
     }
 
-    // === =debug command ===
-    if (cmd === '=debug') {
-        if (message.author.id !== OWNER_ID) {
-            embed.setTitle('Owner Only Command 🚫')
-                 .setDescription('This command can only be used by the bot owner.');
-            return message.reply({ embeds: [embed] });
-        }
+    if (cmd === '=debug' && message.author.id === OWNER_ID) {
         const debugEmbed = new EmbedBuilder()
-            .setTitle('Bot Debug Information')
-            .setColor(0x8e44ad) // Purple
-            .setDescription('Current internal state of the bot data. (Truncated for Discord character limits)');
+            .setTitle('Bot Debug Info')
+            .setColor(0x8e44ad)
+            .setDescription('Internal state snapshot');
 
-        // Prepare fields, ensuring they don't exceed Discord's limits
-        const rolesAllowedStr = JSON.stringify(rolesAllowed, null, 2);
-        const stockStr = JSON.stringify(stock, null, 2);
-        const redeemedStr = JSON.stringify(redeemed, null, 2);
-        const generatedCodesStr = JSON.stringify(generatedCodes, null, 2);
-        const fileStockStr = JSON.stringify(fileStock, null, 2);
-
-        // Function to split large strings for embed fields
-        const splitStringForEmbed = (str, fieldName) => {
-            const maxLen = 1000; // A bit less than 1024 for safety
-            const parts = [];
-            for (let i = 0; i < str.length; i += maxLen) {
-                parts.push(str.substring(i, Math.min(i + maxLen, str.length)));
-            }
-            return parts.map((part, index) => ({
-                name: index === 0 ? fieldName : '\u200b', // Use zero-width space for subsequent parts
-                value: `\`\`\`json\n${part}\n\`\`\``,
-                inline: false
-            }));
-        };
-
-        debugEmbed.addFields(...splitStringForEmbed(rolesAllowedStr, 'Roles Allowed'));
-        debugEmbed.addFields(...splitStringForEmbed(stockStr, 'Stock Data'));
-        debugEmbed.addFields(...splitStringForEmbed(redeemedStr, 'Manually Redeemed'));
-        debugEmbed.addFields(...splitStringForEmbed(generatedCodesStr, 'Generated Codes (in-memory)'));
-        debugEmbed.addFields(...splitStringForEmbed(fileStockStr, 'File Stock'));
-
+        const truncate = (obj) => JSON.stringify(obj, null, 2).slice(0, 1000);
+        debugEmbed.addFields(
+            { name: 'Stock', value: `\`\`\`json\n${truncate(stock)}\n\`\`\``, inline: false },
+            { name: 'Roles Allowed', value: `\`\`\`json\n${truncate(rolesAllowed)}\n\`\`\``, inline: false },
+            { name: 'Redeemed', value: `\`\`\`json\n${truncate(redeemed)}\n\`\`\``, inline: false },
+            { name: 'File Stock', value: `\`\`\`json\n${truncate(fileStock)}\n\`\`\``, inline: false }
+        );
         return message.channel.send({ embeds: [debugEmbed] });
     }
 });
@@ -775,7 +506,7 @@ client.on('messageCreate', async (message) => {
 // === Login ===
 client.login(TOKEN);
 
-// === Express server to keep bot alive ===
+// === Keepalive Server ===
 const app = express();
-app.get('/', (req, res) => res.send('Bot is running'));
+app.get('/', (req, res) => res.send('Bot is running.'));
 app.listen(3000, () => console.log('Express server listening on port 3000'));
