@@ -141,9 +141,8 @@ function createDynamicCommand(category) {
             const foundItemIndex = stock[category].findIndex(item => item.toLowerCase() === requestedStockName.toLowerCase());
             if (foundItemIndex !== -1) {
                 stockItem = stock[category][foundItemIndex];
-                // Remove the item from stock once it's "selected" for generation
-                stock[category].splice(foundItemIndex, 1);
-                saveData(); // Save changes to stock
+                // Removed: stock[category].splice(foundItemIndex, 1);
+                // Removed: saveData();
             } else {
                 embed.setTitle('Invalid Stock ❌')
                      .setDescription(`The stock item \`${requestedStockName}\` was not found in the **${category}** category.`);
@@ -152,9 +151,8 @@ function createDynamicCommand(category) {
         } else { // User did not provide a specific stock name, pick a random one
             const randomIndex = Math.floor(Math.random() * stock[category].length);
             stockItem = stock[category][randomIndex];
-            // Remove the item from stock once it's "selected" for generation
-            stock[category].splice(randomIndex, 1);
-            saveData(); // Save changes to stock
+            // Removed: stock[category].splice(randomIndex, 1);
+            // Removed: saveData();
         }
 
         // If no stock item was found (e.g., if stock became empty after previous checks)
