@@ -214,7 +214,7 @@ client.on('messageCreate', async (message) => {
     const cmd = args[0].toLowerCase();
     const embed = new EmbedBuilder().setColor(0x3498db); // Default embed color
 
-    // ----- Vouch commands -----
+    // ----- Vouch commands (UPDATED) -----
     if (cmd === '+vouch') {
         const user = message.mentions.users.first();
         const reason = args.slice(2).join(' ');
@@ -228,12 +228,14 @@ client.on('messageCreate', async (message) => {
         const id = user.id;
 
         if (!vouches[id]) {
-            vouches[id] = { count: 0, reasons: [], lastVouched: null };
+            // Initialize with both positive and negative counts
+            vouches[id] = { positiveCount: 0, negativeCount: 0, reasons: [], lastVouched: null };
         }
 
-        vouches[id].count++;
+        vouches[id].positiveCount++; // Increment positive vouch count
         vouches[id].reasons.push({
             by: message.author.tag,
+            type: 'positive', // Explicitly mark as positive
             reason,
             date: new Date().toLocaleString(),
         });
@@ -241,7 +243,7 @@ client.on('messageCreate', async (message) => {
 
         saveVouches(vouches);
         embed.setTitle('Vouch Added! ✅')
-             .setDescription(`Successfully vouched for **${user.tag}**.`)
+             .setDescription(`Successfully added a positive vouch for **${user.tag}**.`) // Updated description
              .addFields({ name: 'Reason', value: `"${reason}"` });
         return message.channel.send({ embeds: [embed] });
     }
@@ -258,23 +260,23 @@ client.on('messageCreate', async (message) => {
         const vouches = loadVouches();
         const id = user.id;
 
-        if (!vouches[id] || vouches[id].count <= 0) {
-            embed.setTitle('No Vouches to Remove ❌')
-                 .setDescription(`**${user.tag}** has no vouches to remove.`);
-            return message.reply({ embeds: [embed] });
+        if (!vouches[id]) {
+             // Initialize if not exists
+            vouches[id] = { positiveCount: 0, negativeCount: 0, reasons: [], lastVouched: null };
         }
-
-        vouches[id].count--;
+        
+        vouches[id].negativeCount++; // Increment negative vouch count
         vouches[id].reasons.push({
             by: message.author.tag,
-            reason: `REMOVED: ${reason}`,
+            type: 'negative', // Explicitly mark as negative
+            reason: reason, // The reason is the negative feedback
             date: new Date().toLocaleString(),
         });
         vouches[id].lastVouched = new Date().toLocaleString();
 
         saveVouches(vouches);
-        embed.setTitle('Vouch Removed ❌')
-             .setDescription(`Successfully removed a vouch from **${user.tag}**.`)
+        embed.setTitle('Negative Review Added! ❌') // Updated title
+             .setDescription(`A negative review has been added for **${user.tag}**.`) // Updated description
              .addFields({ name: 'Reason', value: `"${reason}"` });
         return message.channel.send({ embeds: [embed] });
     }
@@ -286,34 +288,58 @@ client.on('messageCreate', async (message) => {
 
         if (!data) {
             embed.setTitle('Profile Not Found ℹ️')
-                 .setDescription(`${user.tag} has not received any vouches yet.`);
+                 .setDescription(`${user.tag} has not received any vouches or reviews yet.`); // Updated description
             return message.reply({ embeds: [embed] });
         }
 
         embed.setColor(0x2ecc71) // Green color
-             .setTitle(`${user.tag}'s Vouch Profile`)
+             .setTitle(`${user.tag}'s Vouch & Review Profile`) // Updated title
              .setThumbnail(user.displayAvatarURL())
-             .setDescription(`**Total Vouches:** ${data.count}`)
              .addFields(
-                 { name: 'Last Vouched On', value: `${data.lastVouched || 'N/A'}`, inline: true },
-                 {
-                     name: 'Recent Vouch Reasons',
-                     value:
-                         data.reasons
-                             .slice(-5) // Get last 5 reasons
-                             .reverse() // Show most recent first
-                             .map((r, i) => `**${data.reasons.length - i}.** By: ${r.by}\nReason: *"${r.reason}"*\nDate: (${r.date})`)
-                             .join('\n\n') || 'No recent reasons.',
-                     inline: false
-                 }
-             )
-             .setFooter({ text: `User ID: ${user.id}` })
+                 { name: '✅ Positive Reviews', value: `${data.positiveCount || 0}`, inline: true }, // Display positive count
+                 { name: '❌ Negative Reviews', value: `${data.negativeCount || 0}`, inline: true }, // Display negative count
+                 { name: 'Last Reviewed On', value: `${data.lastVouched || 'N/A'}`, inline: false } // Changed from Last Vouched On to Last Reviewed On
+             );
+
+        // Filter and display recent reasons, categorizing by type
+        const positiveReasons = data.reasons.filter(r => r.type === 'positive');
+        const negativeReasons = data.reasons.filter(r => r.type === 'negative');
+
+        if (positiveReasons.length > 0) {
+            embed.addFields({
+                name: 'Recent Positive Reviews',
+                value: positiveReasons
+                    .slice(-3) // Get last 3 positive reasons
+                    .reverse() // Show most recent first
+                    .map((r, i) => `**${positiveReasons.length - i}.** By: ${r.by}\nReason: *"${r.reason}"*\nDate: (${r.date})`)
+                    .join('\n\n') || 'No recent positive reviews.',
+                inline: false
+            });
+        }
+
+        if (negativeReasons.length > 0) {
+            embed.addFields({
+                name: 'Recent Negative Reviews',
+                value: negativeReasons
+                    .slice(-3) // Get last 3 negative reasons
+                    .reverse() // Show most recent first
+                    .map((r, i) => `**${negativeReasons.length - i}.** By: ${r.by}\nReason: *"${r.reason}"*\nDate: (${r.date})`)
+                    .join('\n\n') || 'No recent negative reviews.',
+                inline: false
+            });
+        }
+        
+        if (positiveReasons.length === 0 && negativeReasons.length === 0) {
+            embed.addFields({ name: 'Recent Reviews', value: 'No recent reviews.', inline: false });
+        }
+
+        embed.setFooter({ text: `User ID: ${user.id}` })
              .setTimestamp();
 
         return message.channel.send({ embeds: [embed] });
     }
 
-    // ----- Stock Management commands -----
+    // ----- Stock Management commands ----- (No changes here, keeping them for context)
     if (cmd === '=addcategory') {
         if (!message.member.permissions.has('ManageGuild')) {
             embed.setTitle('Permission Denied 🚫')
