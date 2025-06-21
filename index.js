@@ -72,7 +72,8 @@ const ALL_STATIC_COMMAND_NAMES = new Set([
     'restrict',
     'unrestrict',
     'cremove',
-    'mvouch' // NEW: Add mvouch for manual vouch commands
+    'mvouch', // For manual vouch commands
+    'saver' // NEW: For restoring roles.json and channelRestrictions.json
 ]);
 
 
@@ -282,14 +283,14 @@ async function handleMessage(message) {
 
         if (!user || !reason) {
             embed.setTitle('Invalid Usage ❌')
-                 .setDescription(`Usage: \`${cmd} @user <reason>\``);
+                 .setDescription(`Usage: \`${cmd} @user <reason>\`\n`);
             return message.channel.send({ embeds: [embed] });
         }
 
         // NEW: Check if the user is vouchable via =pls
         if (!plsRequests[user.id] || plsRequests[user.id].vouchUsed) {
             embed.setTitle('Cannot Vouch ℹ️')
-                 .setDescription(`First, let ${user.tag} use \`=pls\` to allow vouches!`);
+                 .setDescription(`First, LET ${user.tag} help u!`);
             return message.channel.send({ embeds: [embed] });
         }
 
@@ -1066,9 +1067,9 @@ async function handleMessage(message) {
         try {
             const vouchesAttachment = new AttachmentBuilder(VOUCH_PATH, { name: 'vouches.json' });
             const stockAttachment = new AttachmentBuilder(STOCK_PATH, { name: 'stock.json' });
-            const rolesAttachment = new AttachmentBuilder(ROLES_PATH, { name: 'roles.json' });
+            const rolesAttachment = new AttachmentBuilder(ROLES_PATH, { name: 'roles.json' }); // NEW
             const redeemedAttachment = new AttachmentBuilder(REDEEMED_PATH, { name: 'redeemed.json' });
-            const channelRestrictionsAttachment = new AttachmentBuilder(CHANNEL_RESTRICTIONS_PATH, { name: 'channelRestrictions.json' });
+            const channelRestrictionsAttachment = new AttachmentBuilder(CHANNEL_RESTRICTIONS_PATH, { name: 'channelRestrictions.json' }); // NEW
 
 
             await message.author.send({
@@ -1173,6 +1174,72 @@ async function handleMessage(message) {
             console.error('Error restoring stock:', error);
             embed.setTitle('Restore Failed ❌')
                  .setDescription(`Failed to restore stock. Make sure the attached file is a valid JSON with correct structure. Error: \`${error.message}\``);
+            return message.channel.send({ embeds: [embed] });
+        }
+    }
+
+    if (cmd === '=saver') { // NEW COMMAND: =saver
+        if (!isAuthorized(message.author.id)) {
+            embed.setTitle('Authorization Required 🚫')
+                 .setDescription('You need to be an authorized user to use this command.');
+            return message.channel.send({ embeds: [embed] });
+        }
+
+        if (message.attachments.size !== 2) {
+            embed.setTitle('Invalid Attachments ❌')
+                 .setDescription('Please attach exactly two JSON files: `roles.json` and `channelRestrictions.json`.\nU noob.');
+            return message.channel.send({ embeds: [embed] });
+        }
+
+        let rolesFile = null;
+        let channelRestrictionsFile = null;
+
+        for (const attachment of message.attachments.values()) {
+            if (attachment.name === 'roles.json') {
+                rolesFile = attachment;
+            } else if (attachment.name === 'channelRestrictions.json') {
+                channelRestrictionsFile = attachment;
+            }
+        }
+
+        if (!rolesFile || !channelRestrictionsFile) {
+            embed.setTitle('Incorrect File Names ❌')
+                 .setDescription('Both `roles.json` and `channelRestrictions.json` must be attached.\nU noob.');
+            return message.channel.send({ embeds: [embed] });
+        }
+
+        if (rolesFile.size > 1024 * 500 || channelRestrictionsFile.size > 1024 * 500) { // Limit to 500KB for these smaller files
+            embed.setTitle('File Too Large ❌')
+                 .setDescription('One or both attached files are too large. Max 500KB each.');
+            return message.channel.send({ embeds: [embed] });
+        }
+
+        try {
+            const rolesResponse = await fetch(rolesFile.url);
+            const rolesText = await rolesResponse.text();
+            const newRolesData = JSON.parse(rolesText);
+
+            const channelRestrictionsResponse = await fetch(channelRestrictionsFile.url);
+            const channelRestrictionsText = await channelRestrictionsResponse.text();
+            const newChannelRestrictionsData = JSON.parse(channelRestrictionsText);
+
+            if (typeof newRolesData !== 'object' || newRolesData === null ||
+                typeof newChannelRestrictionsData !== 'object' || newChannelRestrictionsData === null) {
+                throw new Error('Invalid JSON structure. Expected objects.');
+            }
+
+            rolesAllowed = newRolesData;
+            channelRestrictions = newChannelRestrictionsData;
+            saveData(); // Save both
+
+            embed.setTitle('Settings Restored! ✅')
+                 .setDescription('`roles.json` and `channelRestrictions.json` have been successfully restored.');
+            return message.channel.send({ embeds: [embed] });
+
+        } catch (error) {
+            console.error('Error restoring roles/channel restrictions:', error);
+            embed.setTitle('Restore Failed ❌')
+                 .setDescription(`Failed to restore settings. Make sure the attached files are valid JSON. Error: \`${error.message}\`\nU noob.`);
             return message.channel.send({ embeds: [embed] });
         }
     }
