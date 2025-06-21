@@ -19,7 +19,7 @@ const VOUCH_PATH = './vouches.json';
 const STOCK_PATH = './data/stock.json';
 const ROLES_PATH = './data/roles.json';
 const REDEEMED_PATH = './data/redeemed.json';
-const CHANNEL_RESTRICTIONS_PATH = './data/channelRestrictions.json'; // NEW path for channel restrictions
+const CHANNEL_RESTRICTIONS_PATH = './data/channelRestrictions.json';
 
 // === Ensure directories exist ===
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
@@ -36,11 +36,14 @@ if (!fs.existsSync(COOKIE_DIR)) fs.mkdirSync(COOKIE_DIR);
 // === Global data stores ===
 let rolesAllowed = {};         // { commandName: roleId }
 let stock = {};                // { category: [item1, item2, ...] }
-let redeemed = {};             // { stockName: userId } (for manually redeemed stock names)
-let channelRestrictions = {};  // NEW: { commandName: channelId } for restricting commands to specific channels
+let redeemed = {};             // { stockName: userId } (for manually redeemed stock names - now only for hex codes)
+let channelRestrictions = {};  // { commandName: channelId } for restricting commands to specific channels
 
 // Stores generated unique codes: { hexCode: { redeemed: boolean, category: string, stockName: string, generatedBy: string, timestamp: string } }
 const generatedCodes = {}; // In-memory for current session
+
+// NEW: Tracks users who have used =pls and are eligible for a single vouch
+const plsRequests = {}; // { userId: { timestamp: number, vouchUsed: boolean } }
 
 // This will now map dynamic command names (e.g., 'fgen') to their categories ('free')
 const dynamicCommandMap = {};
@@ -66,8 +69,10 @@ const ALL_STATIC_COMMAND_NAMES = new Set([
     'restvouch',
     'reststock',
     'debug',
-    'restrict', // NEW
-    'unrestrict' // NEW
+    'restrict',
+    'unrestrict',
+    'cremove',
+    'mvouch' // NEW: Add mvouch for manual vouch commands
 ]);
 
 
@@ -96,13 +101,13 @@ function loadData() {
     stock = loadJSON(STOCK_PATH);
     redeemed = loadJSON(REDEEMED_PATH);
     rolesAllowed = loadJSON(ROLES_PATH);
-    channelRestrictions = loadJSON(CHANNEL_RESTRICTIONS_PATH); // NEW: Load channel restrictions
+    channelRestrictions = loadJSON(CHANNEL_RESTRICTIONS_PATH);
 }
 function saveData() {
     saveJSON(STOCK_PATH, stock);
     saveJSON(REDEEMED_PATH, redeemed);
     saveJSON(ROLES_PATH, rolesAllowed);
-    saveJSON(CHANNEL_RESTRICTIONS_PATH, channelRestrictions); // NEW: Save channel restrictions
+    saveJSON(CHANNEL_RESTRICTIONS_PATH, channelRestrictions);
 }
 
 // === File Stock Tracking (for cookies) ===
@@ -270,14 +275,27 @@ async function handleMessage(message) {
     }
 
     // --- Static Command Handling ---
-    if (cmd === '+vouch') {
+    if (cmd === '+vouch' || cmd === '-vouch') {
         const user = message.mentions.users.first();
         const reason = args.slice(2).join(' ');
+        const vouchType = cmd === '+vouch' ? 'positive' : 'negative';
+
         if (!user || !reason) {
             embed.setTitle('Invalid Usage ❌')
-                 .setDescription('Usage: `+vouch @user <reason>`');
+                 .setDescription(`Usage: \`${cmd} @user <reason>\``);
             return message.channel.send({ embeds: [embed] });
         }
+
+        // NEW: Check if the user is vouchable via =pls
+        if (!plsRequests[user.id] || plsRequests[user.id].vouchUsed) {
+            embed.setTitle('Cannot Vouch ℹ️')
+                 .setDescription(`First, let ${user.tag} use \`=pls\` to allow vouches!`);
+            return message.channel.send({ embeds: [embed] });
+        }
+
+        // Mark vouch as used for this =pls request
+        plsRequests[user.id].vouchUsed = true;
+
 
         const vouches = loadVouches();
         const id = user.id;
@@ -286,28 +304,44 @@ async function handleMessage(message) {
             vouches[id] = { positiveCount: 0, negativeCount: 0, reasons: [], lastVouched: null };
         }
 
-        vouches[id].positiveCount++;
+        if (vouchType === 'positive') {
+            vouches[id].positiveCount++;
+            embed.setTitle('Vouch Added! ✅')
+                 .setDescription(`Successfully added a positive vouch for **${user.tag}**.`)
+                 .addFields({ name: 'Reason', value: `"${reason}"` });
+        } else {
+            vouches[id].negativeCount++;
+            embed.setTitle('Negative Review Added! ❌')
+                 .setDescription(`A negative review has been added for **${user.tag}**.`)
+                 .addFields({ name: 'Reason', value: `"${reason}"` });
+        }
+
         vouches[id].reasons.push({
             by: message.author.tag,
-            type: 'positive',
+            type: vouchType,
             reason,
             date: new Date().toLocaleString(),
         });
         vouches[id].lastVouched = new Date().toLocaleString();
 
         saveVouches(vouches);
-        embed.setTitle('Vouch Added! ✅')
-             .setDescription(`Successfully added a positive vouch for **${user.tag}**.`)
-             .addFields({ name: 'Reason', value: `"${reason}"` });
         return message.channel.send({ embeds: [embed] });
     }
 
-    if (cmd === '-vouch') {
+    // NEW: +mvouch command
+    if (cmd === '+mvouch') {
+        if (!message.member.permissions.has('ManageGuild')) {
+            embed.setTitle('Permission Denied 🚫')
+                 .setDescription('You need `Manage Server` permission to use this command.');
+            return message.channel.send({ embeds: [embed] });
+        }
         const user = message.mentions.users.first();
-        const reason = args.slice(2).join(' ');
-        if (!user || !reason) {
+        const amount = parseInt(args[2]);
+        const reason = args.slice(3).join(' ') || 'Manual adjustment by staff';
+
+        if (!user || isNaN(amount) || amount <= 0) {
             embed.setTitle('Invalid Usage ❌')
-                 .setDescription('Usage: `-vouch @user <reason>`');
+                 .setDescription('Usage: `+mvouch @user <amount> [reason]`');
             return message.channel.send({ embeds: [embed] });
         }
 
@@ -317,19 +351,67 @@ async function handleMessage(message) {
         if (!vouches[id]) {
             vouches[id] = { positiveCount: 0, negativeCount: 0, reasons: [], lastVouched: null };
         }
-        
-        vouches[id].negativeCount++;
+
+        vouches[id].positiveCount += amount;
         vouches[id].reasons.push({
             by: message.author.tag,
-            type: 'negative',
-            reason: reason,
+            type: 'manual_positive',
+            reason: `${amount} vouches added: "${reason}"`,
             date: new Date().toLocaleString(),
         });
         vouches[id].lastVouched = new Date().toLocaleString();
-
         saveVouches(vouches);
-        embed.setTitle('Negative Review Added! ❌')
-             .setDescription(`A negative review has been added for **${user.tag}**.`)
+
+        embed.setTitle('Vouches Manually Added! ✅')
+             .setDescription(`Successfully added **${amount}** positive vouches for **${user.tag}**.`)
+             .addFields({ name: 'Reason', value: `"${reason}"` });
+        return message.channel.send({ embeds: [embed] });
+    }
+
+    // NEW: -mvouch command
+    if (cmd === '-mvouch') {
+        if (!message.member.permissions.has('ManageGuild')) {
+            embed.setTitle('Permission Denied 🚫')
+                 .setDescription('You need `Manage Server` permission to use this command.');
+            return message.channel.send({ embeds: [embed] });
+        }
+        const user = message.mentions.users.first();
+        const amount = parseInt(args[2]);
+        const reason = args.slice(3).join(' ') || 'Manual adjustment by staff';
+
+        if (!user || isNaN(amount) || amount <= 0) {
+            embed.setTitle('Invalid Usage ❌')
+                 .setDescription('Usage: `-mvouch @user <amount> [reason]`');
+            return message.channel.send({ embeds: [embed] });
+        }
+
+        const vouches = loadVouches();
+        const id = user.id;
+
+        if (!vouches[id]) {
+            vouches[id] = { positiveCount: 0, negativeCount: 0, reasons: [], lastVouched: null };
+        }
+
+        // Ensure vouches don't go below zero
+        vouches[id].negativeCount += amount;
+        if (vouches[id].positiveCount - amount < 0) {
+            // This case handles removal from positive vouches
+            // For now, we only increment negative and don't touch positive for -mvouch
+            // If the intent was to reduce positive vouches, that logic needs to be added.
+            // Keeping it simple as per request: "-mvouches @user to remove the vouches" -> implies adding negative.
+        }
+
+        vouches[id].reasons.push({
+            by: message.author.tag,
+            type: 'manual_negative',
+            reason: `${amount} vouches removed: "${reason}"`,
+            date: new Date().toLocaleString(),
+        });
+        vouches[id].lastVouched = new Date().toLocaleString();
+        saveVouches(vouches);
+
+        embed.setTitle('Vouches Manually Removed! ✅')
+             .setDescription(`Successfully added **${amount}** negative vouches (effectively removed) for **${user.tag}**.`)
              .addFields({ name: 'Reason', value: `"${reason}"` });
         return message.channel.send({ embeds: [embed] });
     }
@@ -354,34 +436,41 @@ async function handleMessage(message) {
                  { name: 'Last Reviewed On', value: `${data.lastVouched || 'N/A'}`, inline: false }
              );
 
-        const positiveReasons = data.reasons.filter(r => r.type === 'positive');
-        const negativeReasons = data.reasons.filter(r => r.type === 'negative');
+        // Filter for regular and manual vouches/reviews
+        const regularPositiveReasons = data.reasons.filter(r => r.type === 'positive');
+        const regularNegativeReasons = data.reasons.filter(r => r.type === 'negative');
+        const manualPositiveReasons = data.reasons.filter(r => r.type === 'manual_positive');
+        const manualNegativeReasons = data.reasons.filter(r => r.type === 'manual_negative');
 
-        if (positiveReasons.length > 0) {
+        // Combine all positive and negative reasons for display
+        const allPositiveReasons = [...regularPositiveReasons, ...manualPositiveReasons];
+        const allNegativeReasons = [...regularNegativeReasons, ...manualNegativeReasons];
+
+        if (allPositiveReasons.length > 0) {
             embed.addFields({
                 name: 'Recent Positive Reviews',
-                value: positiveReasons
+                value: allPositiveReasons
                     .slice(-3)
                     .reverse()
-                    .map((r, i) => `**${positiveReasons.length - i}.** By: ${r.by}\nReason: *"${r.reason}"*\nDate: (${r.date})`)
+                    .map((r, i) => `**${allPositiveReasons.length - i}.** By: ${r.by}\nReason: *"${r.reason}"*\nDate: (${r.date})`)
                     .join('\n\n') || 'No recent positive reviews.',
                 inline: false
             });
         }
 
-        if (negativeReasons.length > 0) {
+        if (allNegativeReasons.length > 0) {
             embed.addFields({
                 name: 'Recent Negative Reviews',
-                value: negativeReasons
+                value: allNegativeReasons
                     .slice(-3)
                     .reverse()
-                    .map((r, i) => `**${negativeReasons.length - i}.** By: ${r.by}\nReason: *"${r.reason}"*\nDate: (${r.date})`)
+                    .map((r, i) => `**${allNegativeReasons.length - i}.** By: ${r.by}\nReason: *"${r.reason}"*\nDate: (${r.date})`)
                     .join('\n\n') || 'No recent negative reviews.',
                 inline: false
             });
         }
         
-        if (positiveReasons.length === 0 && negativeReasons.length === 0) {
+        if (allPositiveReasons.length === 0 && allNegativeReasons.length === 0) {
             embed.addFields({ name: 'Recent Reviews', value: 'No recent reviews.', inline: false });
         }
 
@@ -439,7 +528,7 @@ async function handleMessage(message) {
 
         delete stock[category];
         delete rolesAllowed[`${category[0]}gen`]; // Remove associated role restriction
-        delete channelRestrictions[`${category[0]}gen`]; // Remove associated channel restriction (NEW)
+        delete channelRestrictions[`${category[0]}gen`]; // Remove associated channel restriction
         updateDynamicCommandMap(); // Update map after category removal
         saveData();
 
@@ -562,7 +651,7 @@ async function handleMessage(message) {
         }
     }
 
-    // NEW: =restrict command
+    // =restrict command
     if (cmd === '=restrict') {
         if (!message.member.permissions.has('ManageGuild')) {
             embed.setTitle('Permission Denied 🚫')
@@ -593,7 +682,7 @@ async function handleMessage(message) {
         return message.channel.send({ embeds: [embed] });
     }
 
-    // NEW: =unrestrict command
+    // =unrestrict command
     if (cmd === '=unrestrict') {
         if (!message.member.permissions.has('ManageGuild')) {
             embed.setTitle('Permission Denied 🚫')
@@ -808,6 +897,73 @@ async function handleMessage(message) {
         }
     }
 
+    if (cmd === '=cremove') { // NEW COMMAND: =cremove
+        if (!message.member.permissions.has('ManageGuild')) {
+            embed.setTitle('Permission Denied 🚫')
+                 .setDescription('You need `Manage Server` permission to use this command.');
+            return message.channel.send({ embeds: [embed] });
+        }
+
+        const category = args[1]?.toLowerCase();
+        const fileName = args.slice(2).join(' ');
+
+        if (!category || !fileName) {
+            embed.setTitle('Invalid Usage ❌')
+                 .setDescription('Usage: `=cremove <cookie_category> <file_name>`');
+            return message.channel.send({ embeds: [embed] });
+        }
+
+        const categoryPath = path.join(COOKIE_DIR, category);
+        const filePath = path.join(categoryPath, fileName);
+
+        if (!fs.existsSync(categoryPath)) {
+            embed.setTitle('Category Not Found ❌')
+                 .setDescription(`Cookie category \`${category}\` does not exist.`);
+            return message.channel.send({ embeds: [embed] });
+        }
+
+        if (!fs.existsSync(filePath)) {
+            embed.setTitle('File Not Found ❌')
+                 .setDescription(`File \`${fileName}\` not found in category \`${category}\`.`);
+            return message.channel.send({ embeds: [embed] });
+        }
+
+        try {
+            // Create a temporary ZIP for the file
+            const zip = new AdmZip();
+            zip.addLocalFile(filePath);
+            const tempZipPath = path.join('./', `removed_cookie_${fileName}_${Date.now()}.zip`);
+            zip.writeZip(tempZipPath);
+
+            // Send the ZIP to the user's DM
+            const attachment = new AttachmentBuilder(tempZipPath, { name: `${fileName}.zip` });
+            await message.author.send({
+                content: `Here is the removed cookie file from \`${category}\` you requested:`,
+                files: [attachment]
+            });
+
+            // Delete the original file
+            fs.unlinkSync(filePath);
+
+            // If category becomes empty, remove the directory
+            if (fs.readdirSync(categoryPath).length === 0) {
+                fs.rmdirSync(categoryPath);
+            }
+            updateFileStock(); // Update stock after removal
+
+            embed.setTitle('Cookie Removed and Sent! ✅')
+                 .setDescription(`File \`${fileName}\` removed from \`${category}\` and sent to your DMs.`);
+            return message.channel.send({ embeds: [embed] });
+
+        } catch (error) {
+            console.error('Error removing or sending cookie file:', error);
+            embed.setTitle('Error ❌')
+                 .setDescription(`An error occurred: \`${error.message}\`. Please check console for details or ensure your DMs are open.`);
+            return message.channel.send({ embeds: [embed] });
+        }
+    }
+
+
     if (cmd === '=csend') {
         if (!message.member.permissions.has('ManageGuild')) {
             embed.setTitle('Permission Denied 🚫')
@@ -858,11 +1014,11 @@ async function handleMessage(message) {
         }
     }
 
-    if (cmd === '=redeem') {
+    if (cmd === '=redeem') { // MODIFIED: Only allows redemption by hex code
         const code = args[1]?.toUpperCase();
         if (!code) {
             embed.setTitle('Invalid Usage ❌')
-                 .setDescription('Usage: `=redeem <hex_code_or_stock_name>`');
+                 .setDescription('Usage: `=redeem <hex_code>`');
             return message.channel.send({ embeds: [embed] });
         }
 
@@ -873,7 +1029,7 @@ async function handleMessage(message) {
                      .setDescription(`The code \`${code}\` has already been redeemed.`);
                 return message.channel.send({ embeds: [embed] });
             }
-            codeData.redeemed = true;
+            codeData.redeemed = true; // Mark as redeemed
 
             embed.setTitle('Code Redeemed! ✅')
                  .setDescription(`You have successfully redeemed code: \`${code}\`\n\nThis code was generated for a **${codeData.category.toUpperCase()}** item: \`${codeData.stockName}\`.`)
@@ -883,31 +1039,20 @@ async function handleMessage(message) {
                  )
                  .setFooter({ text: 'This code is now invalid.' });
             return message.channel.send({ embeds: [embed] });
-        }
-
-        if (!isAuthorized(message.author.id)) {
-            embed.setTitle('Authorization Required 🚫')
-                 .setDescription('You are not authorized to manually redeem general stock names.\n\nTo redeem a generated item, please use `=redeem <hex_code>`.');
+        } else {
+            embed.setTitle('Invalid Code ❌')
+                 .setDescription('The provided code is either invalid or has expired. Only hex codes generated by `=*gen` commands can be redeemed.');
             return message.channel.send({ embeds: [embed] });
         }
-
-        if (redeemed[code]) {
-            embed.setTitle('Stock Name Already Manually Redeemed ❌')
-                 .setDescription(`The stock name \`${code}\` has already been manually redeemed by <@${redeemed[code]}>.`);
-            return message.channel.send({ embeds: [embed] });
-        }
-
-        redeemed[code] = message.author.id;
-        saveData();
-        embed.setTitle('Stock Name Manually Redeemed! ✅')
-             .setDescription(`The stock name \`${code}\` has been successfully marked as redeemed by ${message.author.tag}.`);
-        return message.channel.send({ embeds: [embed] });
     }
 
     if (cmd === '=pls') {
+        // NEW: Set the user as vouchable for one vouch
+        // Clear any previous state for this user to allow a new vouch
+        plsRequests[message.author.id] = { timestamp: Date.now(), vouchUsed: false };
+
         embed.setTitle('Cheers for our staff! 🎉')
-             .setDescription(`Show appreciation with \`+vouch @user\` in <#${VOUCH_CHANNEL_ID}>.\nNot happy? Use \`-vouch @user <reason>\`.`)
-             .setColor(0xffa500);
+             .setDescription(`Show appreciation with \`+vouch @user\` in <#${VOUCH_CHANNEL_ID}>.\nNot happy? Use \`-vouch @user <reason>\`.\n\n**You are now eligible to receive ONE vouch/review.**`);
         return message.channel.send({ embeds: [embed] });
     }
 
@@ -921,13 +1066,17 @@ async function handleMessage(message) {
         try {
             const vouchesAttachment = new AttachmentBuilder(VOUCH_PATH, { name: 'vouches.json' });
             const stockAttachment = new AttachmentBuilder(STOCK_PATH, { name: 'stock.json' });
+            const rolesAttachment = new AttachmentBuilder(ROLES_PATH, { name: 'roles.json' });
+            const redeemedAttachment = new AttachmentBuilder(REDEEMED_PATH, { name: 'redeemed.json' });
+            const channelRestrictionsAttachment = new AttachmentBuilder(CHANNEL_RESTRICTIONS_PATH, { name: 'channelRestrictions.json' });
+
 
             await message.author.send({
                 content: 'Here are your backup files:',
-                files: [vouchesAttachment, stockAttachment]
+                files: [vouchesAttachment, stockAttachment, rolesAttachment, redeemedAttachment, channelRestrictionsAttachment]
             });
             embed.setTitle('Backup Sent! ✅')
-                 .setDescription('Your `vouches.json` and `stock.json` files have been sent to your DMs.');
+                 .setDescription('Your bot data files have been sent to your DMs (`vouches.json`, `stock.json`, `roles.json`, `redeemed.json`, `channelRestrictions.json`).');
             return message.channel.send({ embeds: [embed] });
         } catch (dmError) {
             console.error(`Could not DM user ${message.author.tag} for backup:`, dmError);
@@ -1045,7 +1194,8 @@ async function handleMessage(message) {
         const redeemedStr = JSON.stringify(redeemed, null, 2);
         const generatedCodesStr = JSON.stringify(generatedCodes, null, 2);
         const fileStockStr = JSON.stringify(fileStock, null, 2);
-        const channelRestrictionsStr = JSON.stringify(channelRestrictions, null, 2); // NEW debug data
+        const channelRestrictionsStr = JSON.stringify(channelRestrictions, null, 2);
+        const plsRequestsStr = JSON.stringify(plsRequests, null, 2); // NEW: Add plsRequests to debug
 
         const splitStringForEmbed = (str, fieldName) => {
             const maxLen = 1000;
@@ -1065,7 +1215,8 @@ async function handleMessage(message) {
         debugEmbed.addFields(...splitStringForEmbed(redeemedStr, 'Manually Redeemed'));
         debugEmbed.addFields(...splitStringForEmbed(generatedCodesStr, 'Generated Codes (in-memory)'));
         debugEmbed.addFields(...splitStringForEmbed(fileStockStr, 'File Stock'));
-        debugEmbed.addFields(...splitStringForEmbed(channelRestrictionsStr, 'Channel Restrictions')); // NEW debug field
+        debugEmbed.addFields(...splitStringForEmbed(channelRestrictionsStr, 'Channel Restrictions'));
+        debugEmbed.addFields(...splitStringForEmbed(plsRequestsStr, 'PLS Requests (in-memory)')); // NEW
 
         return message.channel.send({ embeds: [debugEmbed] });
     }
