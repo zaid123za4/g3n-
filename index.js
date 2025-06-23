@@ -12,6 +12,7 @@ const OWNER_ID = '1110864648787480656'; // Your Discord User ID
 const AUTHORIZED_USERS = ['1110864648787480656', '1212961835582623755', '1333798275601662056']; // Add IDs of users who can use admin commands
 const CSEND_REQUIRED_ROLE_ID = '1374250200511680656'; // Example Role ID for =csend command
 const VOUCH_CHANNEL_ID = '1374018342444204067'; // <--- IMPORTANT: SET YOUR VOUCH CHANNEL ID HERE
+const REDEEM_ALLOWED_ROLE_ID = '1376539272714260501'; // NEW: Role ID for =redeem command
 
 const DATA_DIR = './data';
 const COOKIE_DIR = './cookies';
@@ -71,9 +72,9 @@ const ALL_STATIC_COMMAND_NAMES = new Set([
     'debug',
     'restrict',
     'unrestrict',
-    'cremove',
+    'cremove', // Modified in this version
     'mvouch', // For manual vouch commands
-    'saver' // NEW: For restoring roles.json and channelRestrictions.json
+    'saver'
 ]);
 
 
@@ -898,7 +899,7 @@ async function handleMessage(message) {
         }
     }
 
-    if (cmd === '=cremove') { // NEW COMMAND: =cremove
+    if (cmd === '=cremove') { // MODIFIED COMMAND: =cremove to remove a whole category and send as zip
         if (!message.member.permissions.has('ManageGuild')) {
             embed.setTitle('Permission Denied 🚫')
                  .setDescription('You need `Manage Server` permission to use this command.');
@@ -906,58 +907,61 @@ async function handleMessage(message) {
         }
 
         const category = args[1]?.toLowerCase();
-        const fileName = args.slice(2).join(' ');
 
-        if (!category || !fileName) {
+        if (!category) {
             embed.setTitle('Invalid Usage ❌')
-                 .setDescription('Usage: `=cremove <cookie_category> <file_name>`');
+                 .setDescription('Usage: `=cremove <cookie_category>` to remove all files in a category and get them in a ZIP.');
             return message.channel.send({ embeds: [embed] });
         }
 
         const categoryPath = path.join(COOKIE_DIR, category);
-        const filePath = path.join(categoryPath, fileName);
-
         if (!fs.existsSync(categoryPath)) {
             embed.setTitle('Category Not Found ❌')
                  .setDescription(`Cookie category \`${category}\` does not exist.`);
             return message.channel.send({ embeds: [embed] });
         }
 
-        if (!fs.existsSync(filePath)) {
-            embed.setTitle('File Not Found ❌')
-                 .setDescription(`File \`${fileName}\` not found in category \`${category}\`.`);
+        const filesInCategories = fs.readdirSync(categoryPath);
+        if (filesInCategories.length === 0) {
+            embed.setTitle('Category Empty ℹ️')
+                 .setDescription(`Category \`${category}\` is already empty. Removing directory.`);
+            fs.rmdirSync(categoryPath);
+            updateFileStock();
             return message.channel.send({ embeds: [embed] });
         }
 
         try {
-            // Create a temporary ZIP for the file
             const zip = new AdmZip();
-            zip.addLocalFile(filePath);
-            const tempZipPath = path.join('./', `removed_cookie_${fileName}_${Date.now()}.zip`);
+            const zipFileName = `${category}_cookies_${Date.now()}.zip`;
+            const tempZipPath = path.join('./', zipFileName);
+
+            // Add all files from the category to the zip
+            filesInCategories.forEach(file => {
+                const filePath = path.join(categoryPath, file);
+                zip.addLocalFile(filePath, category); // Add to a folder named 'category' inside the zip
+            });
+
             zip.writeZip(tempZipPath);
 
             // Send the ZIP to the user's DM
-            const attachment = new AttachmentBuilder(tempZipPath, { name: `${fileName}.zip` });
+            const attachment = new AttachmentBuilder(tempZipPath, { name: zipFileName });
             await message.author.send({
-                content: `Here is the removed cookie file from \`${category}\` you requested:`,
+                content: `Here are all the cookie files from the removed category \`${category}\`:`,
                 files: [attachment]
             });
 
-            // Delete the original file
-            fs.unlinkSync(filePath);
+            // Delete the original category directory and its contents
+            fs.rmSync(categoryPath, { recursive: true, force: true });
+            fs.unlinkSync(tempZipPath); // Clean up temp zip file
 
-            // If category becomes empty, remove the directory
-            if (fs.readdirSync(categoryPath).length === 0) {
-                fs.rmdirSync(categoryPath);
-            }
             updateFileStock(); // Update stock after removal
 
-            embed.setTitle('Cookie Removed and Sent! ✅')
-                 .setDescription(`File \`${fileName}\` removed from \`${category}\` and sent to your DMs.`);
+            embed.setTitle('Category Removed and Sent! ✅')
+                 .setDescription(`All files from category \`${category}\` have been removed and sent to your DMs in a ZIP file.`);
             return message.channel.send({ embeds: [embed] });
 
         } catch (error) {
-            console.error('Error removing or sending cookie file:', error);
+            console.error('Error removing or sending cookie category:', error);
             embed.setTitle('Error ❌')
                  .setDescription(`An error occurred: \`${error.message}\`. Please check console for details or ensure your DMs are open.`);
             return message.channel.send({ embeds: [embed] });
@@ -1015,7 +1019,14 @@ async function handleMessage(message) {
         }
     }
 
-    if (cmd === '=redeem') { // MODIFIED: Only allows redemption by hex code
+    if (cmd === '=redeem') { // MODIFIED: Only allows redemption by hex code and by specific role
+        // NEW: Role permission check for =redeem
+        if (!message.member.roles.cache.has(REDEEM_ALLOWED_ROLE_ID)) {
+            embed.setTitle('Permission Denied 🚫')
+                 .setDescription(`You need the role <@&${REDEEM_ALLOWED_ROLE_ID}> to use this command.`);
+            return message.channel.send({ embeds: [embed] });
+        }
+
         const code = args[1]?.toUpperCase();
         if (!code) {
             embed.setTitle('Invalid Usage ❌')
