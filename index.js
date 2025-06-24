@@ -1,13 +1,4 @@
-It seems like the error `TypeError: Cannot read properties of null (reading 'roles')` is occurring because some commands are being used in a Direct Message (DM) channel, where `message.member` (which contains guild-specific information like roles and permissions) is `null`.
-
-To fix this, I need to ensure that:
-
-1.  The bot's intents include `GatewayIntentBits.GuildMembers` so it can properly access member information within guilds.
-2.  Messages are checked to ensure they originate from a guild (server) before attempting to access `message.member` properties.
-
-Here's the updated code:
-
-```javascript
+javascript
 const { Client, GatewayIntentBits, Partials, AttachmentBuilder, EmbedBuilder, ChannelType } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
@@ -1342,4 +1333,4 @@ client.on('messageCreate', handleMessage);
 const app = express();
 app.get('/', (req, res) => res.send('Bot is running.'));
 app.listen(3000, () => console.log('Express server listening on port 3000'));
-```
+
