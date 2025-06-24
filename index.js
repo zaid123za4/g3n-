@@ -1,3 +1,13 @@
+It seems like the error `TypeError: Cannot read properties of null (reading 'roles')` is occurring because some commands are being used in a Direct Message (DM) channel, where `message.member` (which contains guild-specific information like roles and permissions) is `null`.
+
+To fix this, I need to ensure that:
+
+1.  The bot's intents include `GatewayIntentBits.GuildMembers` so it can properly access member information within guilds.
+2.  Messages are checked to ensure they originate from a guild (server) before attempting to access `message.member` properties.
+
+Here's the updated code:
+
+```javascript
 const { Client, GatewayIntentBits, Partials, AttachmentBuilder, EmbedBuilder, ChannelType } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
@@ -152,8 +162,9 @@ const client = new Client({
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.DirectMessages,
+        GatewayIntentBits.GuildMembers, // ADDED: Guild Members Intent
     ],
-    partials: [Partials.Channel, Partials.Message],
+    partials: [Partials.Channel, Partials.Message, Partials.GuildMember], // ADDED: Guild Member Partial
 });
 
 client.once('ready', () => {
@@ -261,6 +272,29 @@ async function handleMessage(message) {
 
     // Function to check if user is authorized
     const isAuthorized = (userId) => AUTHORIZED_USERS.includes(userId);
+
+    // --- Guild Context Check (NEW) ---
+    // Many commands require message.member or message.guild.permissions, etc.
+    // If it's not a guild message, these properties will be null.
+    // We explicitly allow =backup to proceed without a guild context check, as it DMs the user.
+    // All other commands that manage server data or check roles/permissions should be restricted to guilds.
+    if (!message.guild && commandWithoutPrefix !== 'backup') {
+        // You can send a message in DM if you want, or just ignore it.
+        // For simplicity, we'll ignore commands that aren't =backup if they're in DMs.
+        if (message.channel.type === ChannelType.DM) {
+            embed.setTitle('Command Restricted 🚫')
+                 .setDescription('This command can only be used in a server channel.');
+            return message.channel.send({ embeds: [embed] });
+        }
+        return; // For messages not in DMs but still not in a guild (rare, but good for safety)
+    }
+
+    // After the guild check, message.member should be available for guild messages.
+    // If message.member is still null here for a guild message, it indicates a caching/intent issue,
+    // but the previous fixes should largely mitigate this for common scenarios.
+    // For specific commands that require message.member, add additional check if needed.
+    // For example, if (!message.member) { return message.channel.send('Could not fetch member data.'); }
+
 
     // --- Cooldown Check (NEW) ---
     if (cooldowns[commandWithoutPrefix]) {
@@ -1304,10 +1338,8 @@ async function handleMessage(message) {
 // Attach the main message handler to the client
 client.on('messageCreate', handleMessage);
 
-// === Login ===
-client.login(TOKEN);
-
 // === Keepalive Server ===
 const app = express();
 app.get('/', (req, res) => res.send('Bot is running.'));
 app.listen(3000, () => console.log('Express server listening on port 3000'));
+```
