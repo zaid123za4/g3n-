@@ -12,7 +12,7 @@ const OWNER_ID = '1110864648787480656'; // Your Discord User ID
 const AUTHORIZED_USERS = ['1110864648787480656', '1212961835582623755', '1333798275601662056']; // Add IDs of users who can use admin commands
 const CSEND_REQUIRED_ROLE_ID = '1374250200511680656'; // Example Role ID for =csend command
 const VOUCH_CHANNEL_ID = '1374018342444204067'; // <--- IMPORTANT: SET YOUR VOUCH CHANNEL ID HERE
-const REDEEM_ALLOWED_ROLE_ID = '1376539272714260501'; // NEW: Role ID for =redeem command
+const REDEEM_ALLOWED_ROLE_ID = '1376539272714260501'; // Role ID for =redeem command
 
 const DATA_DIR = './data';
 const COOKIE_DIR = './cookies';
@@ -21,13 +21,14 @@ const STOCK_PATH = './data/stock.json';
 const ROLES_PATH = './data/roles.json';
 const REDEEMED_PATH = './data/redeemed.json';
 const CHANNEL_RESTRICTIONS_PATH = './data/channelRestrictions.json';
+const COOLDOWN_PATH = './data/cooldowns.json'; // NEW: Path for cooldowns data
 
 // === Ensure directories exist ===
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
 if (!fs.existsSync(COOKIE_DIR)) fs.mkdirSync(COOKIE_DIR);
 
 // Ensure all JSON files exist with default empty objects
-[VOUCH_PATH, STOCK_PATH, ROLES_PATH, REDEEMED_PATH, CHANNEL_RESTRICTIONS_PATH].forEach(filePath => {
+[VOUCH_PATH, STOCK_PATH, ROLES_PATH, REDEEMED_PATH, CHANNEL_RESTRICTIONS_PATH, COOLDOWN_PATH].forEach(filePath => {
     if (!fs.existsSync(filePath)) {
         console.log(`${path.basename(filePath)} not found, creating new one.`);
         fs.writeFileSync(filePath, JSON.stringify({}));
@@ -37,13 +38,14 @@ if (!fs.existsSync(COOKIE_DIR)) fs.mkdirSync(COOKIE_DIR);
 // === Global data stores ===
 let rolesAllowed = {};         // { commandName: roleId }
 let stock = {};                // { category: [item1, item2, ...] }
-let redeemed = {};             // { stockName: userId } (for manually redeemed stock names - now only for hex codes)
-let channelRestrictions = {};  // { commandName: channelId } for restricting commands to specific channels
+let redeemed = {};             // { hexCode: { redeemed: boolean, ... } }
+let channelRestrictions = {};  // { commandName: channelId }
+let cooldowns = {};            // NEW: { commandName: { duration: seconds, lastUsed: { userId: timestamp_ms } } }
 
 // Stores generated unique codes: { hexCode: { redeemed: boolean, category: string, stockName: string, generatedBy: string, timestamp: string } }
 const generatedCodes = {}; // In-memory for current session
 
-// NEW: Tracks users who have used =pls and are eligible for a single vouch
+// Tracks users who have used =pls and are eligible for a single vouch
 const plsRequests = {}; // { userId: { timestamp: number, vouchUsed: boolean } }
 
 // This will now map dynamic command names (e.g., 'fgen') to their categories ('free')
@@ -67,14 +69,13 @@ const ALL_STATIC_COMMAND_NAMES = new Set([
     'redeem',
     'pls',
     'backup',
-    'restvouch',
-    'reststock',
     'debug',
     'restrict',
     'unrestrict',
-    'cremove', // Modified in this version
-    'mvouch', // For manual vouch commands
-    'saver'
+    'cremove',
+    'mvouch',
+    'cool', // NEW
+    'timesaved' // NEW consolidated restore command
 ]);
 
 
@@ -91,25 +92,26 @@ function loadJSON(filepath, defaultValue = {}) {
 function saveJSON(filepath, data) {
     fs.writeFileSync(filepath, JSON.stringify(data, null, 2), 'utf8');
 }
-// Vouches function
-function loadVouches() {
-    return loadJSON(VOUCH_PATH);
-}
-function saveVouches(data) {
-    saveJSON(VOUCH_PATH, data);
-}
-// Main data (stock, redeemed, rolesAllowed, channelRestrictions)
+// Specific loaders/savers for clarity
+function loadVouches() { return loadJSON(VOUCH_PATH); }
+function saveVouches(data) { saveJSON(VOUCH_PATH, data); }
+function loadCooldowns() { return loadJSON(COOLDOWN_PATH); } // NEW: Cooldowns loader
+function saveCooldowns(data) { saveJSON(COOLDOWN_PATH, data); } // NEW: Cooldowns saver
+
+// Main data loader/saver
 function loadData() {
     stock = loadJSON(STOCK_PATH);
     redeemed = loadJSON(REDEEMED_PATH);
     rolesAllowed = loadJSON(ROLES_PATH);
     channelRestrictions = loadJSON(CHANNEL_RESTRICTIONS_PATH);
+    cooldowns = loadCooldowns(); // NEW: Load cooldowns
 }
 function saveData() {
     saveJSON(STOCK_PATH, stock);
     saveJSON(REDEEMED_PATH, redeemed);
     saveJSON(ROLES_PATH, rolesAllowed);
     saveJSON(CHANNEL_RESTRICTIONS_PATH, channelRestrictions);
+    saveCooldowns(cooldowns); // NEW: Save cooldowns
 }
 
 // === File Stock Tracking (for cookies) ===
@@ -260,7 +262,30 @@ async function handleMessage(message) {
     // Function to check if user is authorized
     const isAuthorized = (userId) => AUTHORIZED_USERS.includes(userId);
 
-    // --- Channel Restriction Check (NEW) ---
+    // --- Cooldown Check (NEW) ---
+    if (cooldowns[commandWithoutPrefix]) {
+        const cooldownDuration = cooldowns[commandWithoutPrefix].duration;
+        const lastUsedTimestamp = cooldowns[commandWithoutPrefix].lastUsed[message.author.id] || 0;
+        const remainingTime = (lastUsedTimestamp + (cooldownDuration * 1000)) - Date.now();
+
+        if (remainingTime > 0) {
+            const seconds = Math.ceil(remainingTime / 1000);
+            embed.setTitle('Command on Cooldown ⏳')
+                 .setDescription(`\`=${commandWithoutPrefix}\` can be used again in **${seconds}** seconds.`);
+            return message.channel.send({ embeds: [embed] });
+        }
+    }
+
+    // Update cooldown timestamp for the command if it passes the check
+    if (cooldowns[commandWithoutPrefix]) {
+        if (!cooldowns[commandWithoutPrefix].lastUsed) {
+            cooldowns[commandWithoutPrefix].lastUsed = {};
+        }
+        cooldowns[commandWithoutPrefix].lastUsed[message.author.id] = Date.now();
+        saveCooldowns(cooldowns); // Save updated cooldowns
+    }
+
+    // --- Channel Restriction Check ---
     if (channelRestrictions[commandWithoutPrefix]) {
         if (message.channel.id !== channelRestrictions[commandWithoutPrefix]) {
             embed.setTitle('Command Restricted 🚫')
@@ -269,7 +294,7 @@ async function handleMessage(message) {
         }
     }
 
-    // --- Dynamic Command Handling (Revised) ---
+    // --- Dynamic Command Handling ---
     const categoryForDynamicCmd = dynamicCommandMap[commandWithoutPrefix];
     if (categoryForDynamicCmd) {
         await handleDynamicGenCommand(message, categoryForDynamicCmd);
@@ -288,7 +313,7 @@ async function handleMessage(message) {
             return message.channel.send({ embeds: [embed] });
         }
 
-        // NEW: Check if the user is vouchable via =pls
+        // Check if the user is vouchable via =pls
         if (!plsRequests[user.id] || plsRequests[user.id].vouchUsed) {
             embed.setTitle('Cannot Vouch ℹ️')
                  .setDescription(`First, LET ${user.tag} help u!`);
@@ -330,7 +355,6 @@ async function handleMessage(message) {
         return message.channel.send({ embeds: [embed] });
     }
 
-    // NEW: +mvouch command
     if (cmd === '+mvouch') {
         if (!message.member.permissions.has('ManageGuild')) {
             embed.setTitle('Permission Denied 🚫')
@@ -370,7 +394,6 @@ async function handleMessage(message) {
         return message.channel.send({ embeds: [embed] });
     }
 
-    // NEW: -mvouch command
     if (cmd === '-mvouch') {
         if (!message.member.permissions.has('ManageGuild')) {
             embed.setTitle('Permission Denied 🚫')
@@ -394,7 +417,6 @@ async function handleMessage(message) {
             vouches[id] = { positiveCount: 0, negativeCount: 0, reasons: [], lastVouched: null };
         }
 
-        // Ensure vouches don't go below zero
         vouches[id].negativeCount += amount;
         if (vouches[id].positiveCount - amount < 0) {
             // This case handles removal from positive vouches
@@ -531,6 +553,10 @@ async function handleMessage(message) {
         delete stock[category];
         delete rolesAllowed[`${category[0]}gen`]; // Remove associated role restriction
         delete channelRestrictions[`${category[0]}gen`]; // Remove associated channel restriction
+        // Also remove cooldowns for this dynamic command
+        if (cooldowns[`${category[0]}gen`]) {
+            delete cooldowns[`${category[0]}gen`];
+        }
         updateDynamicCommandMap(); // Update map after category removal
         saveData();
 
@@ -653,7 +679,6 @@ async function handleMessage(message) {
         }
     }
 
-    // =restrict command
     if (cmd === '=restrict') {
         if (!message.member.permissions.has('ManageGuild')) {
             embed.setTitle('Permission Denied 🚫')
@@ -684,7 +709,6 @@ async function handleMessage(message) {
         return message.channel.send({ embeds: [embed] });
     }
 
-    // =unrestrict command
     if (cmd === '=unrestrict') {
         if (!message.member.permissions.has('ManageGuild')) {
             embed.setTitle('Permission Denied 🚫')
@@ -709,6 +733,52 @@ async function handleMessage(message) {
                  .setDescription(`The command \`=${commandToUnrestrict}\` does not have a channel restriction set.`);
             return message.channel.send({ embeds: [embed] });
         }
+    }
+
+    // NEW: =cool command
+    if (cmd === '=cool') {
+        if (!isAuthorized(message.author.id)) {
+            embed.setTitle('Authorization Required 🚫')
+                 .setDescription('You need to be an authorized user to use this command.');
+            return message.channel.send({ embeds: [embed] });
+        }
+
+        const commandToCool = args[1]?.toLowerCase();
+        const cooldownTimeSeconds = parseInt(args[2]);
+
+        if (!commandToCool || isNaN(cooldownTimeSeconds) || cooldownTimeSeconds < 0) {
+            embed.setTitle('Invalid Usage ❌')
+                 .setDescription('Usage: `=cool <command_name_without_=> <cooldown_in_seconds>` (use 0 to remove cooldown)');
+            return message.channel.send({ embeds: [embed] });
+        }
+
+        // Validate if it's a known command (static or dynamic)
+        if (!ALL_STATIC_COMMAND_NAMES.has(commandToCool) && !dynamicCommandMap.hasOwnProperty(commandToCool)) {
+            embed.setTitle('Invalid Command ⚠️')
+                 .setDescription(`Command \`=${commandToCool}\` is not a recognized command.`);
+            return message.channel.send({ embeds: [embed] });
+        }
+
+        if (cooldownTimeSeconds === 0) {
+            if (cooldowns[commandToCool]) {
+                delete cooldowns[commandToCool];
+                saveCooldowns(cooldowns);
+                embed.setTitle('Cooldown Removed! ✅')
+                     .setDescription(`Cooldown for \`=${commandToCool}\` has been removed.`);
+            } else {
+                embed.setTitle('No Cooldown Set ℹ️')
+                     .setDescription(`\`=${commandToCool}\` does not have a cooldown set.`);
+            }
+        } else {
+            cooldowns[commandToCool] = {
+                duration: cooldownTimeSeconds,
+                lastUsed: cooldowns[commandToCool]?.lastUsed || {} // Preserve lastUsed if it exists
+            };
+            saveCooldowns(cooldowns);
+            embed.setTitle('Cooldown Set! ✅')
+                 .setDescription(`\`=${commandToCool}\` now has a cooldown of **${cooldownTimeSeconds}** seconds.`);
+        }
+        return message.channel.send({ embeds: [embed] });
     }
 
 
@@ -836,9 +906,9 @@ async function handleMessage(message) {
     }
 
     if (cmd === '=upload') {
-        if (!message.member.permissions.has('ManageGuild')) {
-            embed.setTitle('Permission Denied 🚫')
-                 .setDescription('You need `Manage Server` permission to use this command.');
+        if (!isAuthorized(message.author.id)) {
+            embed.setTitle('Authorization Required 🚫')
+                 .setDescription('You need to be an authorized user to use this command.');
             return message.channel.send({ embeds: [embed] });
         }
 
@@ -1078,17 +1148,17 @@ async function handleMessage(message) {
         try {
             const vouchesAttachment = new AttachmentBuilder(VOUCH_PATH, { name: 'vouches.json' });
             const stockAttachment = new AttachmentBuilder(STOCK_PATH, { name: 'stock.json' });
-            const rolesAttachment = new AttachmentBuilder(ROLES_PATH, { name: 'roles.json' }); // NEW
+            const rolesAttachment = new AttachmentBuilder(ROLES_PATH, { name: 'roles.json' });
             const redeemedAttachment = new AttachmentBuilder(REDEEMED_PATH, { name: 'redeemed.json' });
-            const channelRestrictionsAttachment = new AttachmentBuilder(CHANNEL_RESTRICTIONS_PATH, { name: 'channelRestrictions.json' }); // NEW
-
+            const channelRestrictionsAttachment = new AttachmentBuilder(CHANNEL_RESTRICTIONS_PATH, { name: 'channelRestrictions.json' });
+            const cooldownsAttachment = new AttachmentBuilder(COOLDOWN_PATH, { name: 'cooldowns.json' }); // NEW: Cooldowns backup
 
             await message.author.send({
                 content: 'Here are your backup files:',
-                files: [vouchesAttachment, stockAttachment, rolesAttachment, redeemedAttachment, channelRestrictionsAttachment]
+                files: [vouchesAttachment, stockAttachment, rolesAttachment, redeemedAttachment, channelRestrictionsAttachment, cooldownsAttachment]
             });
             embed.setTitle('Backup Sent! ✅')
-                 .setDescription('Your bot data files have been sent to your DMs (`vouches.json`, `stock.json`, `roles.json`, `redeemed.json`, `channelRestrictions.json`).');
+                 .setDescription('Your bot data files have been sent to your DMs (`vouches.json`, `stock.json`, `roles.json`, `redeemed.json`, `channelRestrictions.json`, `cooldowns.json`).');
             return message.channel.send({ embeds: [embed] });
         } catch (dmError) {
             console.error(`Could not DM user ${message.author.tag} for backup:`, dmError);
@@ -1098,163 +1168,92 @@ async function handleMessage(message) {
         }
     }
 
-    if (cmd === '=restvouch') {
+    // NEW CONSOLIDATED COMMAND: =timesaved
+    if (cmd === '=timesaved') {
         if (!isAuthorized(message.author.id)) {
             embed.setTitle('Authorization Required 🚫')
                  .setDescription('You need to be an authorized user to use this command.');
             return message.channel.send({ embeds: [embed] });
         }
 
-        const attachment = message.attachments.first();
-        if (!attachment || !attachment.name.endsWith('.json')) {
+        const attachments = message.attachments;
+        if (attachments.size === 0) {
             embed.setTitle('Invalid Usage ❌')
-                 .setDescription('Please attach a `.json` file to restore vouches. Usage: `=restvouch {attach vouches.json}`');
+                 .setDescription('Please attach one or more JSON files to restore data. Accepted files: `vouches.json`, `stock.json`, `roles.json`, `redeemed.json`, `channelRestrictions.json`, `cooldowns.json`.');
             return message.channel.send({ embeds: [embed] });
         }
 
-        if (attachment.size > 1024 * 1024 * 5) {
-            embed.setTitle('File Too Large ❌')
-                 .setDescription('The attached file is too large. Max 5MB.');
-            return message.channel.send({ embeds: [embed] });
-        }
+        const allowedFileNames = [
+            'vouches.json', 'stock.json', 'roles.json',
+            'redeemed.json', 'channelRestrictions.json', 'cooldowns.json'
+        ];
+        let restoredFiles = [];
+        let errorMessages = [];
 
-        try {
-            const response = await fetch(attachment.url);
-            const text = await response.text();
-            const newVouchesData = JSON.parse(text);
-
-            if (typeof newVouchesData !== 'object' || newVouchesData === null) {
-                throw new Error('Invalid JSON structure. Expected an object.');
+        for (const attachment of attachments.values()) {
+            if (!attachment.name.endsWith('.json') || !allowedFileNames.includes(attachment.name)) {
+                errorMessages.push(`Skipping invalid file: \`${attachment.name}\`. Only allowed JSON files can be restored.`);
+                continue;
+            }
+            if (attachment.size > 1024 * 1024 * 5) { // 5MB limit for each file
+                errorMessages.push(`Skipping \`${attachment.name}\` - file too large (Max 5MB).`);
+                continue;
             }
 
-            saveVouches(newVouchesData);
-            embed.setTitle('Vouches Restored! ✅')
-                 .setDescription('`vouches.json` has been successfully restored from the attached file.');
-            return message.channel.send({ embeds: [embed] });
-        } catch (error) {
-            console.error('Error restoring vouches:', error);
-            embed.setTitle('Restore Failed ❌')
-                 .setDescription(`Failed to restore vouches. Make sure the attached file is a valid JSON. Error: \`${error.message}\``);
-            return message.channel.send({ embeds: [embed] });
-        }
-    }
+            try {
+                const response = await fetch(attachment.url);
+                const text = await response.text();
+                const newData = JSON.parse(text);
 
-    if (cmd === '=reststock') {
-        if (!isAuthorized(message.author.id)) {
-            embed.setTitle('Authorization Required 🚫')
-                 .setDescription('You need to be an authorized user to use this command.');
-            return message.channel.send({ embeds: [embed] });
-        }
-
-        const attachment = message.attachments.first();
-        if (!attachment || !attachment.name.endsWith('.json')) {
-            embed.setTitle('Invalid Usage ❌')
-                 .setDescription('Please attach a `.json` file to restore stock. Usage: `=reststock {attach stock.json}`');
-            return message.channel.send({ embeds: [embed] });
-        }
-
-        if (attachment.size > 1024 * 1024 * 5) {
-            embed.setTitle('File Too Large ❌')
-                 .setDescription('The attached file is too large. Max 5MB.');
-            return message.channel.send({ embeds: [embed] });
-        }
-
-        try {
-            const response = await fetch(attachment.url);
-            const text = await response.text();
-            const newStockData = JSON.parse(text);
-
-            if (typeof newStockData !== 'object' || newStockData === null) {
-                throw new Error('Invalid JSON structure. Expected an object.');
-            }
-            for (const key in newStockData) {
-                if (!Array.isArray(newStockData[key])) {
-                    throw new Error(`Category "${key}" does not contain an array. Invalid stock format.`);
+                if (typeof newData !== 'object' || newData === null) {
+                    throw new Error('Invalid JSON structure. Expected an object.');
                 }
+
+                switch (attachment.name) {
+                    case 'vouches.json':
+                        saveVouches(newData);
+                        break;
+                    case 'stock.json':
+                        stock = newData;
+                        saveData(); // Saves all data including stock
+                        updateDynamicCommandMap(); // Re-populate dynamic commands based on new stock
+                        break;
+                    case 'roles.json':
+                        rolesAllowed = newData;
+                        saveData();
+                        break;
+                    case 'redeemed.json':
+                        redeemed = newData;
+                        saveData();
+                        break;
+                    case 'channelRestrictions.json':
+                        channelRestrictions = newData;
+                        saveData();
+                        break;
+                    case 'cooldowns.json': // NEW: Restore cooldowns
+                        cooldowns = newData;
+                        saveData();
+                        break;
+                }
+                restoredFiles.push(attachment.name);
+            } catch (error) {
+                errorMessages.push(`Failed to restore \`${attachment.name}\`: \`${error.message}\`.`);
+                console.error(`Error restoring ${attachment.name}:`, error);
             }
-
-            stock = newStockData;
-            saveData();
-
-            updateDynamicCommandMap(); // Update map after restoring stock
-
-            embed.setTitle('Stock Restored! ✅')
-                 .setDescription('`stock.json` has been successfully restored from the attached file. Dynamic commands have been reloaded.');
-            return message.channel.send({ embeds: [embed] });
-        } catch (error) {
-            console.error('Error restoring stock:', error);
-            embed.setTitle('Restore Failed ❌')
-                 .setDescription(`Failed to restore stock. Make sure the attached file is a valid JSON with correct structure. Error: \`${error.message}\``);
-            return message.channel.send({ embeds: [embed] });
         }
+
+        if (restoredFiles.length > 0) {
+            embed.setTitle('Data Restoration Complete! ✅')
+                 .setDescription(`Successfully restored: ${restoredFiles.map(f => `\`${f}\``).join(', ')}.`);
+        } else {
+            embed.setTitle('Data Restoration Failed ❌')
+                 .setDescription('No valid files were restored. Ensure correct file names and valid JSON format.\nU noob.');
+        }
+        if (errorMessages.length > 0) {
+            embed.addFields({ name: 'Errors', value: errorMessages.join('\n'), inline: false });
+        }
+        return message.channel.send({ embeds: [embed] });
     }
-
-    if (cmd === '=saver') { // NEW COMMAND: =saver
-        if (!isAuthorized(message.author.id)) {
-            embed.setTitle('Authorization Required 🚫')
-                 .setDescription('You need to be an authorized user to use this command.');
-            return message.channel.send({ embeds: [embed] });
-        }
-
-        if (message.attachments.size !== 2) {
-            embed.setTitle('Invalid Attachments ❌')
-                 .setDescription('Please attach exactly two JSON files: `roles.json` and `channelRestrictions.json`.\nU noob.');
-            return message.channel.send({ embeds: [embed] });
-        }
-
-        let rolesFile = null;
-        let channelRestrictionsFile = null;
-
-        for (const attachment of message.attachments.values()) {
-            if (attachment.name === 'roles.json') {
-                rolesFile = attachment;
-            } else if (attachment.name === 'channelRestrictions.json') {
-                channelRestrictionsFile = attachment;
-            }
-        }
-
-        if (!rolesFile || !channelRestrictionsFile) {
-            embed.setTitle('Incorrect File Names ❌')
-                 .setDescription('Both `roles.json` and `channelRestrictions.json` must be attached.\nU noob.');
-            return message.channel.send({ embeds: [embed] });
-        }
-
-        if (rolesFile.size > 1024 * 500 || channelRestrictionsFile.size > 1024 * 500) { // Limit to 500KB for these smaller files
-            embed.setTitle('File Too Large ❌')
-                 .setDescription('One or both attached files are too large. Max 500KB each.');
-            return message.channel.send({ embeds: [embed] });
-        }
-
-        try {
-            const rolesResponse = await fetch(rolesFile.url);
-            const rolesText = await rolesResponse.text();
-            const newRolesData = JSON.parse(rolesText);
-
-            const channelRestrictionsResponse = await fetch(channelRestrictionsFile.url);
-            const channelRestrictionsText = await channelRestrictionsResponse.text();
-            const newChannelRestrictionsData = JSON.parse(channelRestrictionsText);
-
-            if (typeof newRolesData !== 'object' || newRolesData === null ||
-                typeof newChannelRestrictionsData !== 'object' || newChannelRestrictionsData === null) {
-                throw new Error('Invalid JSON structure. Expected objects.');
-            }
-
-            rolesAllowed = newRolesData;
-            channelRestrictions = newChannelRestrictionsData;
-            saveData(); // Save both
-
-            embed.setTitle('Settings Restored! ✅')
-                 .setDescription('`roles.json` and `channelRestrictions.json` have been successfully restored.');
-            return message.channel.send({ embeds: [embed] });
-
-        } catch (error) {
-            console.error('Error restoring roles/channel restrictions:', error);
-            embed.setTitle('Restore Failed ❌')
-                 .setDescription(`Failed to restore settings. Make sure the attached files are valid JSON. Error: \`${error.message}\`\nU noob.`);
-            return message.channel.send({ embeds: [embed] });
-        }
-    }
-
 
     if (cmd === '=debug') {
         if (!isAuthorized(message.author.id)) {
@@ -1273,7 +1272,8 @@ async function handleMessage(message) {
         const generatedCodesStr = JSON.stringify(generatedCodes, null, 2);
         const fileStockStr = JSON.stringify(fileStock, null, 2);
         const channelRestrictionsStr = JSON.stringify(channelRestrictions, null, 2);
-        const plsRequestsStr = JSON.stringify(plsRequests, null, 2); // NEW: Add plsRequests to debug
+        const plsRequestsStr = JSON.stringify(plsRequests, null, 2);
+        const cooldownsStr = JSON.stringify(cooldowns, null, 2); // NEW: Add cooldowns to debug
 
         const splitStringForEmbed = (str, fieldName) => {
             const maxLen = 1000;
@@ -1294,7 +1294,8 @@ async function handleMessage(message) {
         debugEmbed.addFields(...splitStringForEmbed(generatedCodesStr, 'Generated Codes (in-memory)'));
         debugEmbed.addFields(...splitStringForEmbed(fileStockStr, 'File Stock'));
         debugEmbed.addFields(...splitStringForEmbed(channelRestrictionsStr, 'Channel Restrictions'));
-        debugEmbed.addFields(...splitStringForEmbed(plsRequestsStr, 'PLS Requests (in-memory)')); // NEW
+        debugEmbed.addFields(...splitStringForEmbed(plsRequestsStr, 'PLS Requests (in-memory)'));
+        debugEmbed.addFields(...splitStringForEmbed(cooldownsStr, 'Cooldowns')); // NEW debug field
 
         return message.channel.send({ embeds: [debugEmbed] });
     }
