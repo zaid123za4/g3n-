@@ -228,7 +228,7 @@ async function handleDynamicGenCommand(msg, category) {
                     .setColor(0x2ecc71)
                     .setTitle('✨ Your Generated Stock Code!')
                     .setDescription(
-  `**🛡 FIRST VERIFY URSELF** [CLICK HERE](https://ember-chat-register-web.onrender.com/Chat)\n\n` +
+  `**🛡 FIRST VERIFY URSELF** [CLICK HERE](https://link-center.net/1359562/Tjl517CXY1Bv)\n\n` +
   `🎁 Here is your unique code for a **${category}** item: \`${hexCode}\`\n\n` +
   `🎫 To view details, open a ticket and ping our staff.`
 )                   
