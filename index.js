@@ -1328,6 +1328,7 @@ async function handleMessage(message) {
         return message.channel.send({ embeds: [debugEmbed] });
     }
 }
+client.login(TOKEN);
 
 // Attach the main message handler to the client
 client.on('messageCreate', handleMessage);
