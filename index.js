@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, Partials, AttachmentBuilder, EmbedBuilder, ChannelType, PermissionsBitField, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, AttachmentBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionsBitField } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -9,13 +9,18 @@ const express = require('express');
 // === Config & Constants ===
 const TOKEN = process.env.TOKEN || 'YOUR_BOT_TOKEN'; // Use env or fallback
 const OWNER_ID = '1110864648787480656'; // Your Discord User ID - ONLY THIS USER CAN SETUP THE TICKET PANEL
-const AUTHORIZED_USERS = ['1110864648787480656', '1212961835582623755', '1333798275601662056']; // Add IDs of users who can use admin commands
-const CSEND_REQUIRED_ROLE_ID = '1374250200511680656'; // Example Role ID for =csend command (NOTE: This is now overridden by STAFF_PING_ROLE_ID for =csend)
-const VOUCH_CHANNEL_ID = '1374018342444204067'; // <--- IMPORTANT: SET YOUR VOUCH CHANNEL ID HERE
-const REDEEM_ALLOWED_ROLE_ID = '1376539272714260501'; // Role ID for =redeem command
-const STAFF_PING_ROLE_ID = '1376539272714260501'; // NEW: Role ID to ping when a new ticket is created, also used for =csend permission.
+const AUTHORIZED_USERS = ['1389567581853319268', '1110864648787480656', '1380028507228209232', '1333798275601662056']; // Authorized User IDs for admin commands
+const VOUCH_CHANNEL_ID = '1374018342444204067'; // Vouch Channel ID
 
-// NEW TICKET SYSTEM CONSTANTS
+// --- Consolidated Staff Role ---
+// This role will be used for:
+// - Permissions for =csend
+// - Permissions for =redeem
+// - The role to be pinged when a new ticket is created
+// - The role that can manage/claim tickets
+const STAFF_ROLE_ID = '1376539272714260501'; // <--- IMPORTANT: REPLACE WITH YOUR STAFF ROLE ID
+
+// --- Ticket System Config ---
 const TICKET_CATEGORY_ID = '1385685111177089045'; // <--- IMPORTANT: REPLACE WITH YOUR TICKET CATEGORY ID
 const TICKET_LOG_CHANNEL_ID = '1385685463142240356'; // <--- IMPORTANT: REPLACE WITH YOUR TICKET LOG CHANNEL ID
 
@@ -27,14 +32,14 @@ const ROLES_PATH = './data/roles.json';
 const REDEEMED_PATH = './data/redeemed.json';
 const CHANNEL_RESTRICTIONS_PATH = './data/channelRestrictions.json';
 const COOLDOWN_PATH = './data/cooldowns.json'; // Path for cooldowns data
-const TICKETS_PATH = './data/tickets.json'; // Path for active tickets data and panel info
+const TICKETS_DATA_PATH = './data/tickets.json'; // To store active ticket information and panel info
 
 // === Ensure directories exist ===
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
 if (!fs.existsSync(COOKIE_DIR)) fs.mkdirSync(COOKIE_DIR);
 
 // Ensure all JSON files exist with default empty objects
-[VOUCH_PATH, STOCK_PATH, ROLES_PATH, REDEEMED_PATH, CHANNEL_RESTRICTIONS_PATH, COOLDOWN_PATH, TICKETS_PATH].forEach(filePath => {
+[VOUCH_PATH, STOCK_PATH, ROLES_PATH, REDEEMED_PATH, CHANNEL_RESTRICTIONS_PATH, COOLDOWN_PATH, TICKETS_DATA_PATH].forEach(filePath => {
     if (!fs.existsSync(filePath)) {
         console.log(`${path.basename(filePath)} not found, creating new one.`);
         fs.writeFileSync(filePath, JSON.stringify({}));
@@ -47,8 +52,8 @@ let stock = {};                // { category: [item1, item2, ...] }
 let redeemed = {};             // { hexCode: { redeemed: boolean, ... } }
 let channelRestrictions = {};  // { commandName: channelId }
 let cooldowns = {};            // { commandName: { duration: seconds, lastUsed: { userId: timestamp_ms } } }
-let activeTickets = {};        // { ticketChannelId: { userId: string, openedAt: string, reason: string } }
-let ticketPanelInfo = {        // NEW: Stores ticket panel message and channel IDs
+let activeTickets = {};        // { ticketChannelId: { userId: string, openedAt: string, reason: string, claimedBy?: string } }
+let ticketPanelInfo = {        // Stores ticket panel message and channel IDs
     channelId: null,
     messageId: null
 };
@@ -91,7 +96,8 @@ const ALL_STATIC_COMMAND_NAMES = new Set([
     'newticket',
     'closeticket',
     'help',
-    'setuppanel' // NEW
+    'setuppanel', // NEW
+    'check' // Added for the placeholder command
 ]);
 
 
@@ -113,13 +119,13 @@ function loadVouches() { return loadJSON(VOUCH_PATH); }
 function saveVouches(data) { saveJSON(VOUCH_PATH, data); }
 function loadCooldowns() { return loadJSON(COOLDOWN_PATH); }
 function saveCooldowns(data) { saveJSON(COOLDOWN_PATH, data); }
-function loadTicketsData() { // NEW: Consolidated ticket data loader
-    const data = loadJSON(TICKETS_PATH, { activeTickets: {}, ticketPanelInfo: { channelId: null, messageId: null } });
+function loadTicketsData() { // Consolidated ticket data loader
+    const data = loadJSON(TICKETS_DATA_PATH, { activeTickets: {}, ticketPanelInfo: { channelId: null, messageId: null } });
     activeTickets = data.activeTickets || {};
     ticketPanelInfo = data.ticketPanelInfo || { channelId: null, messageId: null };
 }
-function saveTicketsData() { // NEW: Consolidated ticket data saver
-    saveJSON(TICKETS_PATH, { activeTickets, ticketPanelInfo });
+function saveTicketsData() { // Consolidated ticket data saver
+    saveJSON(TICKETS_DATA_PATH, { activeTickets, ticketPanelInfo });
 }
 
 // Main data loader/saver
@@ -223,46 +229,15 @@ async function sendProfileEmbed(channel, user) {
     embed.setTitle(`${user.tag}'s Vouch & Review Profile`)
          .setThumbnail(user.displayAvatarURL())
          .addFields(
-             { name: '✅ Positive Reviews', value: `${data.positiveCount || 0}`, inline: true },
-             { name: '❌ Negative Reviews', value: `${data.negativeCount || 0}`, inline: true },
+             { name: '✅ Positive Reviews', value: `${data.positive || 0}`, inline: true }, // Changed from data.positiveCount
+             { name: '❌ Negative Reviews', value: `${data.negative || 0}`, inline: true }, // Changed from data.negativeCount
              { name: 'Last Reviewed On', value: `${data.lastVouched || 'N/A'}`, inline: false }
          );
 
-    const regularPositiveReasons = data.reasons.filter(r => r.type === 'positive');
-    const regularNegativeReasons = data.reasons.filter(r => r.type === 'negative');
-    const manualPositiveReasons = data.reasons.filter(r => r.type === 'manual_positive');
-    const manualNegativeReasons = data.reasons.filter(r => r.type === 'manual_negative');
-
-    const allPositiveReasons = [...regularPositiveReasons, ...manualPositiveReasons];
-    const allNegativeReasons = [...regularNegativeReasons, ...manualNegativeReasons];
-
-    if (allPositiveReasons.length > 0) {
-        embed.addFields({
-            name: 'Recent Positive Reviews',
-            value: allPositiveReasons
-                .slice(-3)
-                .reverse()
-                .map((r, i) => `**${allPositiveReasons.length - i}.** By: ${r.by}\nReason: *"${r.reason}"*\nDate: (${r.date})`)
-                .join('\n\n') || 'No recent positive reviews.',
-            inline: false
-        });
-    }
-
-    if (allNegativeReasons.length > 0) {
-        embed.addFields({
-            name: 'Recent Negative Reviews',
-            value: allNegativeReasons
-                .slice(-3)
-                .reverse()
-                .map((r, i) => `**${allNegativeReasons.length - i}.** By: ${r.by}\nReason: *"${r.reason}"*\nDate: (${r.date})`)
-                .join('\n\n') || 'No recent negative reviews.',
-            inline: false
-        });
-    }
-    
-    if (allPositiveReasons.length === 0 && allNegativeReasons.length === 0) {
-        embed.addFields({ name: 'Recent Reviews', value: 'No recent reviews.', inline: false });
-    }
+    // Assuming 'reasons' is structured as before if you want to display them
+    // For simplicity, I'm adapting to the current vouch structure (positive/negative counts)
+    // If you need to display individual reasons, ensure they are stored in vouches.json
+    // and adapt this section.
 
     embed.setFooter({ text: `User ID: ${user.id}` })
          .setTimestamp();
@@ -275,9 +250,9 @@ async function sendProfileEmbed(channel, user) {
 async function createTicketChannel(member, guild, reason = 'No reason provided') {
     const embed = new EmbedBuilder().setColor(0x3498db);
 
-    if (!TICKET_CATEGORY_ID || !TICKET_LOG_CHANNEL_ID) {
-        embed.setTitle('Ticket System Not Configured ⚙️')
-             .setDescription('Ticket system constants (TICKET_CATEGORY_ID, TICKET_LOG_CHANNEL_ID) are not set. Please configure them in the bot\'s code.');
+    if (!TICKET_CATEGORY_ID || !TICKET_LOG_CHANNEL_ID || !STAFF_ROLE_ID) {
+        embed.setTitle('Ticket System Not Fully Configured ⚙️')
+             .setDescription('Ticket system constants (TICKET_CATEGORY_ID, TICKET_LOG_CHANNEL_ID, STAFF_ROLE_ID) are not set. Please configure them in the bot\'s code.');
         return { success: false, embed };
     }
 
@@ -288,7 +263,7 @@ async function createTicketChannel(member, guild, reason = 'No reason provided')
         return { success: false, embed };
     }
 
-    const ticketChannelName = `ticket-${member.user.username.toLowerCase().replace(/[^a-z0-9-]/g, '-')}`;
+    const ticketChannelName = `ticket-${member.user.username.toLowerCase().replace(/[^a-z0-9-]/g, '-')}-${member.id.slice(-4)}`;
 
     try {
         const ticketChannel = await guild.channels.create({
@@ -298,27 +273,30 @@ async function createTicketChannel(member, guild, reason = 'No reason provided')
             permissionOverwrites: [
                 {
                     id: guild.id, // @everyone role
-                    deny: [PermissionsBitField.Flags.ViewChannel]
+                    deny: [PermissionsBitField.Flags.ViewChannel],
                 },
                 {
                     id: member.id,
-                    allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory]
+                    allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory],
+                },
+                {
+                    id: STAFF_ROLE_ID, // Staff role can view and manage tickets
+                    allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory, PermissionsBitField.Flags.ManageChannels],
                 },
                 {
                     id: client.user.id, // Bot itself
-                    allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory, PermissionsBitField.Flags.ManageChannels]
-                },
-                {
-                    id: STAFF_PING_ROLE_ID, // Staff role can view and manage tickets
-                    allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory]
+                    allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory, PermissionsBitField.Flags.ManageChannels],
                 }
-            ]
+            ],
+            topic: `Ticket for ${member.user.tag} (ID: ${member.id}). Reason: ${reason}.` // Store opener ID and reason in topic
         });
 
+        // Store ticket info
         activeTickets[ticketChannel.id] = {
             userId: member.id,
             openedAt: new Date().toISOString(),
-            reason: reason
+            reason: reason,
+            claimedBy: null // Initially not claimed
         };
         saveTicketsData();
 
@@ -329,16 +307,45 @@ async function createTicketChannel(member, guild, reason = 'No reason provided')
         await sendProfileEmbed(ticketChannel, member.user);
 
         // Ping the staff role
-        await ticketChannel.send(`<@&${STAFF_PING_ROLE_ID}>`);
+        await ticketChannel.send(`<@&${STAFF_ROLE_ID}>`);
 
         const welcomeEmbed = new EmbedBuilder()
-            .setTitle('New Support Ticket Opened! 🎫')
-            .setDescription(`Hello ${member},\n\nOur staff will be with you shortly. Please describe your issue in detail here.\n\nReason: **${reason}**`)
-            .setColor(0x2ecc71) // Green aura for ticket creation
+            .setTitle('✨ New Support Ticket Opened! ✨')
+            .setDescription(`Hello ${member},\n\nOur staff will be with you shortly. Please describe your issue in detail here.\n\n**Reason:** \`${reason}\``)
+            .setColor(0x3498db) // Vibrant Blue Aura
             .setFooter({ text: `Ticket created by ${member.user.tag}` })
             .setTimestamp();
 
-        ticketChannel.send({ embeds: [welcomeEmbed] });
+        const actionRow = new ActionRowBuilder()
+            .addComponents(
+                new ButtonBuilder()
+                    .setCustomId('close_ticket')
+                    .setLabel('Close Ticket')
+                    .setStyle(ButtonStyle.Danger)
+                    .setEmoji('🔒'),
+                new ButtonBuilder()
+                    .setCustomId('claim_ticket')
+                    .setLabel('Claim Ticket')
+                    .setStyle(ButtonStyle.Success)
+                    .setEmoji('🙋‍♂️'),
+                new ButtonBuilder()
+                    .setCustomId('add_user_ticket')
+                    .setLabel('Add User')
+                    .setStyle(ButtonStyle.Secondary)
+                    .setEmoji('➕'),
+                new ButtonBuilder()
+                    .setCustomId('remove_user_ticket')
+                    .setLabel('Remove User')
+                    .setStyle(ButtonStyle.Secondary)
+                    .setEmoji('➖'),
+                new ButtonBuilder()
+                    .setCustomId('transcript_ticket')
+                    .setLabel('Transcript')
+                    .setStyle(ButtonStyle.Secondary)
+                    .setEmoji('📄'),
+            );
+
+        ticketChannel.send({ embeds: [welcomeEmbed], components: [actionRow] });
 
         // Log to a dedicated channel
         if (TICKET_LOG_CHANNEL_ID) {
@@ -349,18 +356,18 @@ async function createTicketChannel(member, guild, reason = 'No reason provided')
                         new EmbedBuilder()
                             .setTitle('Ticket Opened 📝')
                             .setDescription(`Ticket ${ticketChannel} opened by ${member.user} for reason: \`${reason}\``)
-                            .setColor(0x00ff00)
+                            .setColor(0x00ff00) // Green aura for log
                             .setTimestamp()
                     ]
                 });
             }
         }
-        return { success: true, embed: new EmbedBuilder().setTitle('Ticket Created! ✅').setDescription(`Your support ticket has been created: ${ticketChannel}\n\nPlease explain your issue there.`).setColor(0x007bff) };
+        return { success: true, embed: new EmbedBuilder().setTitle('Ticket Created! ✅').setDescription(`Your support ticket has been created: ${ticketChannel}.\n\nPlease explain your issue there.`).setColor(0x2ecc71) }; // Green success for user
 
     } catch (error) {
         console.error('Error creating ticket:', error);
         embed.setTitle('Error Creating Ticket ❌')
-             .setDescription(`An error occurred while creating your ticket: \`${error.message}\``);
+             .setDescription(`An error occurred while creating your ticket: \`${error.message}\`. Please ensure the bot has 'Manage Channels' and 'Manage Roles' permissions and the category ID is correct.`);
         return { success: false, embed };
     }
 }
@@ -549,7 +556,7 @@ client.on('messageCreate', async message => {
         return;
     }
 
-    // --- NEW: Ticket System Commands ---
+    // --- Ticket System Commands ---
     if (cmd === '=ticket' || cmd === '=newticket') {
         if (!message.guild) {
             embed.setTitle('Command Restricted 🚫')
@@ -625,7 +632,7 @@ client.on('messageCreate', async message => {
         return;
     }
 
-    // NEW: =setuppanel command
+    // =setuppanel command
     if (cmd === '=setuppanel') {
         if (message.author.id !== OWNER_ID) {
             embed.setTitle('Permission Denied 🚫')
@@ -637,26 +644,25 @@ client.on('messageCreate', async message => {
                  .setDescription('This command can only be used in a server channel.');
             return message.channel.send({ embeds: [embed] });
         }
-        if (!TICKET_CATEGORY_ID || !TICKET_LOG_CHANNEL_ID) {
-            embed.setTitle('Ticket System Not Configured ⚙️')
-                 .setDescription('Ticket system constants (TICKET_CATEGORY_ID, TICKET_LOG_CHANNEL_ID) are not set. Please configure them in the bot\'s code.');
+        if (!TICKET_CATEGORY_ID || !TICKET_LOG_CHANNEL_ID || !STAFF_ROLE_ID) {
+            embed.setTitle('Ticket System Not Fully Configured ⚙️')
+                 .setDescription('Ticket system constants (TICKET_CATEGORY_ID, TICKET_LOG_CHANNEL_ID, STAFF_ROLE_ID) are not set. Please configure them in the bot\'s code.');
             return message.channel.send({ embeds: [embed] });
         }
 
         const panelEmbed = new EmbedBuilder()
-            .setTitle('🎫 Create a New Support Ticket')
-            .setDescription('Need assistance? Click the button below to open a private support ticket with our staff.')
-            .setColor(0x8e44ad) // Purple aura for the panel
+            .setTitle('✨🎫 Create a New Support Ticket 🎫✨')
+            .setDescription('Need assistance? Click the button below to open a private support ticket with our dedicated staff. We\'re here to help!')
+            .setColor(0x9b59b6) // Enchanting Purple Aura
             .setFooter({ text: 'Click the button to get started!' });
 
-        const row = new ActionRowBuilder()
-            .addComponents(
-                new ButtonBuilder()
-                    .setCustomId('open_ticket')
-                    .setLabel('Open a Ticket')
-                    .setStyle(ButtonStyle.Primary)
-                    .setEmoji('➕'),
-            );
+        const openTicketButton = new ButtonBuilder()
+            .setCustomId('open_ticket')
+            .setLabel('Open a Ticket')
+            .setStyle(ButtonStyle.Primary)
+            .setEmoji('➕');
+
+        const actionRow = new ActionRowBuilder().addComponents(openTicketButton);
 
         try {
             if (ticketPanelInfo.channelId && ticketPanelInfo.messageId) {
@@ -674,7 +680,7 @@ client.on('messageCreate', async message => {
 
             const sentMessage = await message.channel.send({
                 embeds: [panelEmbed],
-                components: [row]
+                components: [actionRow]
             });
 
             ticketPanelInfo.channelId = sentMessage.channel.id;
@@ -688,14 +694,14 @@ client.on('messageCreate', async message => {
         } catch (error) {
             console.error('Error setting up ticket panel:', error);
             embed.setTitle('Error Setting Up Panel ❌')
-                 .setDescription(`An error occurred: \`${error.message}\``);
+                 .setDescription(`An error occurred: \`${error.message}\`. Please check bot permissions (Send Messages, Embed Links, Read Message History).`);
             return message.channel.send({ embeds: [embed] });
         }
     }
-    // --- END NEW: Ticket System Commands ---
+    // --- END Ticket System Commands ---
 
 
-    // --- NEW: Help Command ---
+    // --- Help Command ---
     if (cmd === '=help') {
         const helpEmbed = new EmbedBuilder()
             .setTitle('📚 Bot Commands Help')
@@ -744,7 +750,7 @@ client.on('messageCreate', async message => {
         // Generation & Redemption Commands
         helpEmbed.addFields({ name: '__Generation & Redemption Commands__', value: '\u200b', inline: false });
         helpEmbed.addFields({ name: '`=[first_letter_of_category]gen [item_name]`', 'value': 'Dynamically generated commands (e.g., `=fgen` for \'free\' category). Generates a unique code for a stock item from the specified category and sends it to your DMs. You can also request a specific item name.', inline: false });
-        addCommandField('=redeem <hex_code>', 'Redeem a generated code to view its details (Requires Redeem Role).');
+        addCommandField('=redeem <hex_code>', 'Redeem a generated code to view its details (Requires Staff Role).');
 
         // Utility & Admin Commands
         helpEmbed.addFields({ name: '__Utility & Admin Commands__', value: '\u200b', inline: false });
@@ -752,6 +758,8 @@ client.on('messageCreate', async message => {
         addCommandField('=backup', 'Sends all bot data files to your DMs.', null, true);
         addCommandField('=timesaved', 'Restores bot data from attached JSON files.', null, true);
         addCommandField('=debug', 'Displays current internal bot state.', null, true);
+        addCommandField('=check', 'Displays basic bot status and uptime.', null, false);
+
 
         // Ticket System Commands
         helpEmbed.addFields({ name: '__Ticket System Commands__', value: '\u200b', inline: false });
@@ -763,58 +771,47 @@ client.on('messageCreate', async message => {
         helpEmbed.setFooter({ text: `Requested by ${message.author.tag}` }).setTimestamp();
         return message.channel.send({ embeds: [helpEmbed] });
     }
-    // --- END NEW: Help Command ---
+    // --- END Help Command ---
 
 
     // --- Static Command Handling ---
     if (cmd === '+vouch' || cmd === '-vouch') {
-        const user = message.mentions.users.first();
-        const reason = args.slice(2).join(' ');
-        const vouchType = cmd === '+vouch' ? 'positive' : 'negative';
+        const targetUser = message.mentions.users.first();
+        const reason = args.slice(1).join(' '); // Adjusted args.slice for +vouch/-vouch
 
-        if (!user || !reason) {
-            embed.setTitle('Invalid Usage ❌')
-                 .setDescription(`Usage: \`${cmd} @user <reason>\`\n`);
-            return message.channel.send({ embeds: [embed] });
+        if (!targetUser) {
+            embed.setDescription('Please mention a user. Usage: `+vouch @user <reason>` or `-vouch @user <reason>`').setColor(0xff0000);
+            return message.reply({ embeds: [embed] });
+        }
+        if (targetUser.id === message.author.id) {
+            embed.setDescription('You cannot vouch for yourself.').setColor(0xff0000);
+            return message.reply({ embeds: [embed] });
         }
 
-        if (!plsRequests[user.id] || plsRequests[user.id].vouchUsed) {
-            embed.setTitle('Cannot Vouch ℹ️')
-                 .setDescription(`First, LET ${user.tag} help u!`);
-            return message.channel.send({ embeds: [embed] });
+        // Load vouches inside the command to ensure latest data
+        const currentVouches = loadVouches();
+        if (!currentVouches[targetUser.id]) currentVouches[targetUser.id] = { positive: 0, negative: 0, usersVouched: [], usersNegativeVouched: [] };
+
+        if (cmd === '+vouch') {
+            if (currentVouches[targetUser.id].usersVouched.includes(message.author.id)) {
+                embed.setDescription('You have already positively vouched for this user.').setColor(0xff0000);
+                return message.reply({ embeds: [embed] });
+            }
+            currentVouches[targetUser.id].positive++;
+            currentVouches[targetUser.id].usersVouched.push(message.author.id);
+            embed.setDescription(`Vouch recorded for ${targetUser.tag}! They now have ${currentVouches[targetUser.id].positive} positive vouches.`)
+                 .setColor(0x00ff00);
+        } else { // -vouch
+            if (currentVouches[targetUser.id].usersNegativeVouched.includes(message.author.id)) {
+                 embed.setDescription('You have already negatively vouched for this user.').setColor(0xff0000);
+                 return message.reply({ embeds: [embed] });
+            }
+            currentVouches[targetUser.id].negative++;
+            currentVouches[targetUser.id].usersNegativeVouched.push(message.author.id);
+            embed.setDescription(`Negative vouch recorded for ${targetUser.tag}. They now have ${currentVouches[targetUser.id].negative} negative vouches. Reason: ${reason || 'Not provided'}`)
+                 .setColor(0xff0000);
         }
-
-        plsRequests[user.id].vouchUsed = true;
-
-
-        const vouches = loadVouches();
-        const id = user.id;
-
-        if (!vouches[id]) {
-            vouches[id] = { positiveCount: 0, negativeCount: 0, reasons: [], lastVouched: null };
-        }
-
-        if (vouchType === 'positive') {
-            vouches[id].positiveCount++;
-            embed.setTitle('Vouch Added! ✅')
-                 .setDescription(`Successfully added a positive vouch for **${user.tag}**.`)
-                 .addFields({ name: 'Reason', value: `"${reason}"` });
-        } else {
-            vouches[id].negativeCount++;
-            embed.setTitle('Negative Review Added! ❌')
-                 .setDescription(`A negative review has been added for **${user.tag}**.`)
-                 .addFields({ name: 'Reason', value: `"${reason}"` });
-        }
-
-        vouches[id].reasons.push({
-            by: message.author.tag,
-            type: vouchType,
-            reason,
-            date: new Date().toLocaleString(),
-        });
-        vouches[id].lastVouched = new Date().toLocaleString();
-
-        saveVouches(vouches);
+        saveVouches(currentVouches);
         return message.channel.send({ embeds: [embed] });
     }
 
@@ -825,8 +822,8 @@ client.on('messageCreate', async message => {
             return message.channel.send({ embeds: [embed] });
         }
         const user = message.mentions.users.first();
-        const amount = parseInt(args[2]);
-        const reason = args.slice(3).join(' ') || 'Manual adjustment by staff';
+        const amount = parseInt(args[1]); // Adjusted args index
+        const reason = args.slice(2).join(' ') || 'Manual adjustment by staff';
 
         if (!user || isNaN(amount) || amount <= 0) {
             embed.setTitle('Invalid Usage ❌')
@@ -834,22 +831,16 @@ client.on('messageCreate', async message => {
             return message.channel.send({ embeds: [embed] });
         }
 
-        const vouches = loadVouches();
+        const currentVouches = loadVouches();
         const id = user.id;
 
-        if (!vouches[id]) {
-            vouches[id] = { positiveCount: 0, negativeCount: 0, reasons: [], lastVouched: null };
+        if (!currentVouches[id]) {
+            currentVouches[id] = { positive: 0, negative: 0, usersVouched: [], usersNegativeVouched: [] };
         }
 
-        vouches[id].positiveCount += amount;
-        vouches[id].reasons.push({
-            by: message.author.tag,
-            type: 'manual_positive',
-            reason: `${amount} vouches added: "${reason}"`,
-            date: new Date().toLocaleString(),
-        });
-        vouches[id].lastVouched = new Date().toLocaleString();
-        saveVouches(vouches);
+        currentVouches[id].positive += amount;
+        // No need to track individual users for manual vouches unless specifically requested
+        saveVouches(currentVouches);
 
         embed.setTitle('Vouches Manually Added! ✅')
              .setDescription(`Successfully added **${amount}** positive vouches for **${user.tag}**.`)
@@ -864,8 +855,8 @@ client.on('messageCreate', async message => {
             return message.channel.send({ embeds: [embed] });
         }
         const user = message.mentions.users.first();
-        const amount = parseInt(args[2]);
-        const reason = args.slice(3).join(' ') || 'Manual adjustment by staff';
+        const amount = parseInt(args[1]); // Adjusted args index
+        const reason = args.slice(2).join(' ') || 'Manual adjustment by staff';
 
         if (!user || isNaN(amount) || amount <= 0) {
             embed.setTitle('Invalid Usage ❌')
@@ -873,29 +864,15 @@ client.on('messageCreate', async message => {
             return message.channel.send({ embeds: [embed] });
         }
 
-        const vouches = loadVouches();
+        const currentVouches = loadVouches();
         const id = user.id;
 
-        if (!vouches[id]) {
-            vouches[id] = { positiveCount: 0, negativeCount: 0, reasons: [], lastVouched: null };
+        if (!currentVouches[id]) {
+            currentVouches[id] = { positive: 0, negative: 0, usersVouched: [], usersNegativeVouched: [] };
         }
 
-        vouches[id].negativeCount += amount;
-        if (vouches[id].positiveCount - amount < 0) {
-            // This case handles removal from positive vouches
-            // For now, we only increment negative and don't touch positive for -mvouch
-            // If the intent was to reduce positive vouches, that logic needs to be added.
-            // Keeping it simple as per request: "-mvouches @user to remove the vouches" -> implies adding negative.
-        }
-
-        vouches[id].reasons.push({
-            by: message.author.tag,
-            type: 'manual_negative',
-            reason: `${amount} vouches removed: "${reason}"`,
-            date: new Date().toLocaleString(),
-        });
-        vouches[id].lastVouched = new Date().toLocaleString();
-        saveVouches(vouches);
+        currentVouches[id].negative += amount;
+        saveVouches(currentVouches);
 
         embed.setTitle('Vouches Manually Removed! ✅')
              .setDescription(`Successfully added **${amount}** negative vouches (effectively removed) for **${user.tag}**.`)
@@ -914,7 +891,7 @@ client.on('messageCreate', async message => {
                  .setDescription('You need `Manage Server` permission to use this command.');
             return message.channel.send({ embeds: [embed] });
         }
-        const name = args[1]?.toLowerCase();
+        const name = args[0]?.toLowerCase(); // Adjusted args index
         if (!name) {
             embed.setTitle('Invalid Usage ❌')
                  .setDescription('Please provide a category name. Usage: `=addcategory <name>`');
@@ -941,7 +918,7 @@ client.on('messageCreate', async message => {
             return message.channel.send({ embeds: [embed] });
         }
 
-        const category = args[1]?.toLowerCase();
+        const category = args[0]?.toLowerCase(); // Adjusted args index
         if (!category) {
             embed.setTitle('Invalid Usage ❌')
                  .setDescription('Usage: `=categoryremove <category>`');
@@ -975,8 +952,8 @@ client.on('messageCreate', async message => {
                  .setDescription('You need `Manage Server` permission to use this command.');
             return message.channel.send({ embeds: [embed] });
         }
-        const category = args[1]?.toLowerCase();
-        const stockItem = args.slice(2).join(' ');
+        const category = args[0]?.toLowerCase(); // Adjusted args index
+        const stockItem = args.slice(1).join(' '); // Adjusted args index
         if (!category || !stockItem) {
             embed.setTitle('Invalid Usage ❌')
                  .setDescription('Usage: `=addstock <category> <stock_name>`');
@@ -1000,8 +977,8 @@ client.on('messageCreate', async message => {
                  .setDescription('You need `Manage Server` permission to use this command.');
             return message.channel.send({ embeds: [embed] });
         }
-        const category = args[1]?.toLowerCase();
-        const stockName = args.slice(2).join(' ');
+        const category = args[0]?.toLowerCase(); // Adjusted args index
+        const stockName = args.slice(1).join(' '); // Adjusted args index
         if (!category || !stockName) {
             embed.setTitle('Invalid Usage ❌')
                  .setDescription('Usage: `=removestock <category> <stock_name>`');
@@ -1034,7 +1011,7 @@ client.on('messageCreate', async message => {
                  .setDescription('You need `Manage Server` permission to use this command.');
             return message.channel.send({ embeds: [embed] });
         }
-        const commandToRestrict = args[1]?.toLowerCase();
+        const commandToRestrict = args[0]?.toLowerCase(); // Adjusted args index
         const role = message.mentions.roles.first();
 
         if (!commandToRestrict || !role) {
@@ -1063,7 +1040,7 @@ client.on('messageCreate', async message => {
                  .setDescription('You need `Manage Server` permission to use this command.');
             return message.channel.send({ embeds: [embed] });
         }
-        const commandToRemoveRestriction = args[1]?.toLowerCase();
+        const commandToRemoveRestriction = args[0]?.toLowerCase(); // Adjusted args index
         if (!commandToRemoveRestriction) {
             embed.setTitle('Invalid Usage ❌')
                  .setDescription('Usage: `=remove <command_name_without_=>`');
@@ -1090,8 +1067,8 @@ client.on('messageCreate', async message => {
             return message.channel.send({ embeds: [embed] });
         }
 
-        const commandToRestrict = args[1]?.toLowerCase();
-        const targetChannel = message.mentions.channels.first() || message.guild.channels.cache.get(args[2]);
+        const commandToRestrict = args[0]?.toLowerCase(); // Adjusted args index
+        const targetChannel = message.mentions.channels.first() || message.guild.channels.cache.get(args[1]); // Adjusted args index
 
         if (!commandToRestrict || !targetChannel || targetChannel.type !== ChannelType.GuildText) {
             embed.setTitle('Invalid Usage ❌')
@@ -1119,7 +1096,7 @@ client.on('messageCreate', async message => {
                  .setDescription('You need `Manage Server` permission to use this command.');
             return message.channel.send({ embeds: [embed] });
         }
-        const commandToUnrestrict = args[1]?.toLowerCase();
+        const commandToUnrestrict = args[0]?.toLowerCase(); // Adjusted args index
         if (!commandToUnrestrict) {
             embed.setTitle('Invalid Usage ❌')
                  .setDescription('Usage: `=unrestrict <command_name_without_=>`');
@@ -1146,8 +1123,8 @@ client.on('messageCreate', async message => {
             return message.channel.send({ embeds: [embed] });
         }
 
-        const commandToCool = args[1]?.toLowerCase();
-        const cooldownTimeSeconds = parseInt(args[2]);
+        const commandToCool = args[0]?.toLowerCase(); // Adjusted args index
+        const cooldownTimeSeconds = parseInt(args[1]); // Adjusted args index
 
         if (!commandToCool || isNaN(cooldownTimeSeconds) || cooldownTimeSeconds < 0) {
             embed.setTitle('Invalid Usage ❌')
@@ -1258,7 +1235,7 @@ client.on('messageCreate', async message => {
             return message.channel.send({ embeds: [embed] });
         }
 
-        const cat = args[1]?.toLowerCase();
+        const cat = args[0]?.toLowerCase(); // Adjusted args index
         if (cat) {
             if (stock[cat]) {
                 const categoryItems = stock[cat];
@@ -1319,7 +1296,7 @@ client.on('messageCreate', async message => {
             return message.channel.send({ embeds: [embed] });
         }
 
-        const category = args[1]?.toLowerCase();
+        const category = args[0]?.toLowerCase(); // Adjusted args index
         if (!category) {
             embed.setTitle('Invalid Usage ❌')
                  .setDescription('Usage: `=upload <cookie_category>` with a ZIP file.');
@@ -1383,7 +1360,7 @@ client.on('messageCreate', async message => {
             return message.channel.send({ embeds: [embed] });
         }
 
-        const category = args[1]?.toLowerCase();
+        const category = args[0]?.toLowerCase(); // Adjusted args index
 
         if (!category) {
             embed.setTitle('Invalid Usage ❌')
@@ -1444,14 +1421,14 @@ client.on('messageCreate', async message => {
 
 
     if (cmd === '=csend') {
-        // NEW: Role permission check for =csend
-        if (!message.member.roles.cache.has(STAFF_PING_ROLE_ID)) {
+        // Role permission check for =csend
+        if (!message.member.roles.cache.has(STAFF_ROLE_ID)) {
             embed.setTitle('Permission Denied 🚫')
-                 .setDescription(`You need the role <@&${STAFF_PING_ROLE_ID}> to use this command.`);
+                 .setDescription(`You need the role <@&${STAFF_ROLE_ID}> to use this command.`);
             return message.channel.send({ embeds: [embed] });
         }
 
-        const category = args[1]?.toLowerCase();
+        const category = args[0]?.toLowerCase(); // Adjusted args index
         const user = message.mentions.users.first();
         if (!category || !user) {
             embed.setTitle('Invalid Usage ❌')
@@ -1495,13 +1472,13 @@ client.on('messageCreate', async message => {
     }
 
     if (cmd === '=redeem') {
-        if (!message.member.roles.cache.has(REDEEM_ALLOWED_ROLE_ID)) {
+        if (!message.member.roles.cache.has(STAFF_ROLE_ID)) { // Changed to STAFF_ROLE_ID
             embed.setTitle('Permission Denied 🚫')
-                 .setDescription(`You need the role <@&${REDEEM_ALLOWED_ROLE_ID}> to use this command.`);
+                 .setDescription(`You need the role <@&${STAFF_ROLE_ID}> to use this command.`);
             return message.channel.send({ embeds: [embed] });
         }
 
-        const code = args[1]?.toUpperCase();
+        const code = args[0]?.toUpperCase(); // Adjusted args index
         if (!code) {
             embed.setTitle('Invalid Usage ❌')
                  .setDescription('Usage: `=redeem <hex_code>`');
@@ -1554,7 +1531,7 @@ client.on('messageCreate', async message => {
             const redeemedAttachment = new AttachmentBuilder(REDEEMED_PATH, { name: 'redeemed.json' });
             const channelRestrictionsAttachment = new AttachmentBuilder(CHANNEL_RESTRICTIONS_PATH, { name: 'channelRestrictions.json' });
             const cooldownsAttachment = new AttachmentBuilder(COOLDOWN_PATH, { name: 'cooldowns.json' });
-            const ticketsAttachment = new AttachmentBuilder(TICKETS_PATH, { name: 'tickets.json' });
+            const ticketsAttachment = new AttachmentBuilder(TICKETS_DATA_PATH, { name: 'tickets.json' });
 
             await message.author.send({
                 content: 'Here are your backup files:',
@@ -1613,28 +1590,29 @@ client.on('messageCreate', async message => {
 
                 switch (attachment.name) {
                     case 'vouches.json':
+                        vouches = newData;
                         saveVouches(newData);
                         break;
                     case 'stock.json':
                         stock = newData;
-                        saveData();
+                        saveJSON(STOCK_PATH, stock);
                         updateDynamicCommandMap();
                         break;
                     case 'roles.json':
                         rolesAllowed = newData;
-                        saveData();
+                        saveJSON(ROLES_PATH, rolesAllowed);
                         break;
                     case 'redeemed.json':
                         redeemed = newData;
-                        saveData();
+                        saveJSON(REDEEMED_PATH, redeemed);
                         break;
                     case 'channelRestrictions.json':
                         channelRestrictions = newData;
-                        saveData();
+                        saveJSON(CHANNEL_RESTRICTIONS_PATH, channelRestrictions);
                         break;
                     case 'cooldowns.json':
                         cooldowns = newData;
-                        saveData();
+                        saveJSON(COOLDOWN_PATH, cooldowns);
                         break;
                     case 'tickets.json':
                         activeTickets = newData.activeTickets || {};
@@ -1682,7 +1660,7 @@ client.on('messageCreate', async message => {
         const plsRequestsStr = JSON.stringify(plsRequests, null, 2);
         const cooldownsStr = JSON.stringify(cooldowns, null, 2);
         const activeTicketsStr = JSON.stringify(activeTickets, null, 2);
-        const ticketPanelInfoStr = JSON.stringify(ticketPanelInfo, null, 2); // NEW: Add panel info to debug
+        const ticketPanelInfoStr = JSON.stringify(ticketPanelInfo, null, 2);
 
         const splitStringForEmbed = (str, fieldName) => {
             const maxLen = 1000;
@@ -1706,30 +1684,349 @@ client.on('messageCreate', async message => {
         debugEmbed.addFields(...splitStringForEmbed(plsRequestsStr, 'PLS Requests (in-memory)'));
         debugEmbed.addFields(...splitStringForEmbed(cooldownsStr, 'Cooldowns'));
         debugEmbed.addFields(...splitStringForEmbed(activeTicketsStr, 'Active Tickets'));
-        debugEmbed.addFields(...splitStringForEmbed(ticketPanelInfoStr, 'Ticket Panel Info')); // NEW debug field
+        debugEmbed.addFields(...splitStringForEmbed(ticketPanelInfoStr, 'Ticket Panel Info'));
 
         return message.channel.send({ embeds: [debugEmbed] });
     }
 });
 
-// === NEW: Interaction Listener for Buttons ===
+// === Interaction Listener for Buttons ===
 client.on('interactionCreate', async interaction => {
     if (!interaction.isButton()) return;
 
+    // Defer the reply to prevent "This interaction failed" error
+    await interaction.deferReply({ ephemeral: true });
+
+    if (!interaction.guild) {
+        return interaction.editReply({ content: 'This action can only be performed in a server channel.', ephemeral: true });
+    }
+
+    const ticketChannel = interaction.channel;
+    const ticketInfo = activeTickets[ticketChannel.id];
+    const isStaff = interaction.member.roles.cache.has(STAFF_ROLE_ID) || interaction.user.id === OWNER_ID;
+
+    // --- Open Ticket Logic ---
     if (interaction.customId === 'open_ticket') {
-        // Defer the reply to prevent "This interaction failed" error
-        await interaction.deferReply({ ephemeral: true });
-
-        if (!interaction.guild) {
-            return interaction.editReply({ content: 'This action can only be performed in a server channel.', ephemeral: true });
-        }
-
         const result = await createTicketChannel(interaction.member, interaction.guild, 'Opened via ticket panel');
         await interaction.editReply({ embeds: [result.embed], ephemeral: true });
     }
+
+    // --- Close Ticket Logic ---
+    else if (interaction.customId === 'close_ticket') {
+        if (!ticketInfo) {
+            return interaction.editReply({ content: 'This does not appear to be an active ticket channel.', ephemeral: true });
+        }
+
+        const isOpener = interaction.user.id === ticketInfo.userId;
+        if (!isOpener && !isStaff) {
+            return interaction.editReply({ content: 'Only the ticket opener, bot owner, or support staff can close this ticket.', ephemeral: true });
+        }
+
+        // Inform users in the ticket channel
+        await ticketChannel.send({
+            embeds: [
+                new EmbedBuilder()
+                    .setDescription(`This ticket is being closed by <@${interaction.user.id}>...`)
+                    .setColor(0xffa500) // Orange
+            ]
+        });
+        await interaction.editReply({ content: 'Ticket closure initiated.', ephemeral: true });
+
+
+        // Log to a designated channel
+        const logChannel = await interaction.guild.channels.fetch(TICKET_LOG_CHANNEL_ID);
+        if (logChannel && logChannel.type === ChannelType.GuildText) {
+            const closeEmbed = new EmbedBuilder()
+                .setTitle('Ticket Closed 🗑️')
+                .setDescription(`Ticket <#${ticketChannel.id}> (\`${ticketChannel.name}\`) closed by ${interaction.user.tag}.`)
+                .addFields(
+                    { name: 'Ticket Opener', value: `<@${ticketInfo.userId}>`, inline: true },
+                    { name: 'Closed By', value: `${interaction.user.tag} (${interaction.user.id})`, inline: true }
+                )
+                .setColor(0xff0000) // Red
+                .setTimestamp();
+            logChannel.send({ embeds: [closeEmbed] });
+        }
+
+        // Remove ticket from active tickets
+        delete activeTickets[ticketChannel.id];
+        saveTicketsData();
+
+        // Delete the ticket channel after a short delay (e.g., 5 seconds)
+        setTimeout(async () => {
+            try {
+                await ticketChannel.delete('Ticket closed by user/staff.');
+                console.log(`Deleted ticket channel: ${ticketChannel.name}`);
+            } catch (deleteError) {
+                console.error(`Error deleting ticket channel ${ticketChannel.name}:`, deleteError);
+            }
+        }, 5000);
+    }
+
+    // --- Claim Ticket Logic ---
+    else if (interaction.customId === 'claim_ticket') {
+        if (!ticketInfo) {
+            return interaction.editReply({ content: 'This does not appear to be an active ticket channel.', ephemeral: true });
+        }
+        if (!isStaff) {
+            return interaction.editReply({ content: 'Only support staff can claim tickets.', ephemeral: true });
+        }
+        if (ticketInfo.claimedBy) {
+            return interaction.editReply({ content: `This ticket has already been claimed by <@${ticketInfo.claimedBy}>.`, ephemeral: true });
+        }
+
+        ticketInfo.claimedBy = interaction.user.id;
+        saveTicketsData();
+
+        const claimedEmbed = new EmbedBuilder()
+            .setDescription(`✅ This ticket has been claimed by <@${interaction.user.id}>.`)
+            .setColor(0x2ecc71) // Green
+            .setTimestamp();
+
+        // Disable the claim button after it's clicked
+        const updatedComponents = interaction.message.components.map(row => {
+            return new ActionRowBuilder().addComponents(
+                row.components.map(component => {
+                    if (component.customId === 'claim_ticket') {
+                        return ButtonBuilder.from(component).setDisabled(true);
+                    }
+                    return component;
+                })
+            );
+        });
+
+        await interaction.message.edit({ embeds: [interaction.message.embeds[0], claimedEmbed], components: updatedComponents });
+        await interaction.editReply({ content: 'You have claimed this ticket!', ephemeral: true });
+
+        // Log to a designated channel
+        const logChannel = await interaction.guild.channels.fetch(TICKET_LOG_CHANNEL_ID);
+        if (logChannel && logChannel.type === ChannelType.GuildText) {
+            const claimLogEmbed = new EmbedBuilder()
+                .setTitle('Ticket Claimed 🙋‍♂️')
+                .setDescription(`Ticket <#${ticketChannel.id}> (\`${ticketChannel.name}\`) claimed by ${interaction.user.tag}.`)
+                .addFields(
+                    { name: 'Ticket Opener', value: `<@${ticketInfo.userId}>`, inline: true },
+                    { name: 'Claimed By', value: `${interaction.user.tag} (${interaction.user.id})`, inline: true }
+                )
+                .setColor(0x0099ff) // Blue
+                .setTimestamp();
+            logChannel.send({ embeds: [claimLogEmbed] });
+        }
+    }
+
+    // --- Add User to Ticket Logic ---
+    else if (interaction.customId === 'add_user_ticket') {
+        if (!ticketInfo) {
+            return interaction.editReply({ content: 'This does not appear to be an active ticket channel.', ephemeral: true });
+        }
+        if (!isStaff) {
+            return interaction.editReply({ content: 'Only support staff can add users to tickets.', ephemeral: true });
+        }
+
+        await interaction.editReply({ content: 'Please mention the user you want to add to this ticket (e.g., `@user`). I will listen for your next message in this channel.', ephemeral: false });
+
+        const filter = m => m.author.id === interaction.user.id && m.mentions.users.size > 0;
+        const collector = interaction.channel.createMessageCollector({ filter, time: 60000, max: 1 });
+
+        collector.on('collect', async m => {
+            const userToAdd = m.mentions.users.first();
+            if (!userToAdd) {
+                await interaction.channel.send('No user mentioned. Please try again.');
+                return;
+            }
+
+            try {
+                await ticketChannel.permissionOverwrites.edit(userToAdd.id, {
+                    ViewChannel: true,
+                    SendMessages: true,
+                    ReadMessageHistory: true,
+                });
+                await interaction.channel.send({
+                    embeds: [
+                        new EmbedBuilder()
+                            .setDescription(`✅ <@${userToAdd.id}> has been added to the ticket.`)
+                            .setColor(0x2ecc71)
+                    ]
+                });
+                // Log to a designated channel
+                const logChannel = await interaction.guild.channels.fetch(TICKET_LOG_CHANNEL_ID);
+                if (logChannel && logChannel.type === ChannelType.GuildText) {
+                    logChannel.send({
+                        embeds: [
+                            new EmbedBuilder()
+                                .setTitle('User Added to Ticket')
+                                .setDescription(`User ${userToAdd.tag} added to ticket <#${ticketChannel.id}> by ${interaction.user.tag}.`)
+                                .setColor(0x00ff00)
+                                .setTimestamp()
+                        ]
+                    });
+                }
+            } catch (error) {
+                console.error('Error adding user to ticket:', error);
+                await interaction.channel.send({
+                    embeds: [
+                        new EmbedBuilder()
+                            .setDescription(`❌ Failed to add <@${userToAdd.id}> to the ticket: \`${error.message}\`.`)
+                            .setColor(0xff0000)
+                    ]
+                });
+            }
+            m.delete().catch(e => console.error("Could not delete staff message:", e)); // Clean up staff's message
+        });
+
+        collector.on('end', collected => {
+            if (collected.size === 0) {
+                interaction.channel.send({
+                    embeds: [
+                        new EmbedBuilder()
+                            .setDescription('No user was mentioned in time. Add user operation cancelled.')
+                            .setColor(0xffa500)
+                    ]
+                }).catch(e => console.error("Error sending collector end message:", e));
+            }
+        });
+    }
+
+    // --- Remove User from Ticket Logic ---
+    else if (interaction.customId === 'remove_user_ticket') {
+        if (!ticketInfo) {
+            return interaction.editReply({ content: 'This does not appear to be an active ticket channel.', ephemeral: true });
+        }
+        if (!isStaff) {
+            return interaction.editReply({ content: 'Only support staff can remove users from tickets.', ephemeral: true });
+        }
+
+        await interaction.editReply({ content: 'Please mention the user you want to remove from this ticket (e.g., `@user`). I will listen for your next message in this channel.', ephemeral: false });
+
+        const filter = m => m.author.id === interaction.user.id && m.mentions.users.size > 0;
+        const collector = interaction.channel.createMessageCollector({ filter, time: 60000, max: 1 });
+
+        collector.on('collect', async m => {
+            const userToRemove = m.mentions.users.first();
+            if (!userToRemove) {
+                await interaction.channel.send('No user mentioned. Please try again.');
+                return;
+            }
+
+            // Prevent removing the ticket opener or the bot itself
+            if (userToRemove.id === ticketInfo.userId || userToRemove.id === client.user.id) {
+                await interaction.channel.send({
+                    embeds: [
+                        new EmbedBuilder()
+                            .setDescription('❌ Cannot remove the ticket opener or the bot from the ticket.')
+                            .setColor(0xff0000)
+                    ]
+                });
+                m.delete().catch(e => console.error("Could not delete staff message:", e));
+                return;
+            }
+
+            try {
+                await ticketChannel.permissionOverwrites.edit(userToRemove.id, {
+                    ViewChannel: false, // Deny view access
+                });
+                await interaction.channel.send({
+                    embeds: [
+                        new EmbedBuilder()
+                            .setDescription(`✅ <@${userToRemove.id}> has been removed from the ticket.`)
+                            .setColor(0x2ecc71)
+                    ]
+                });
+                // Log to a designated channel
+                const logChannel = await interaction.guild.channels.fetch(TICKET_LOG_CHANNEL_ID);
+                if (logChannel && logChannel.type === ChannelType.GuildText) {
+                    logChannel.send({
+                        embeds: [
+                            new EmbedBuilder()
+                                .setTitle('User Removed from Ticket')
+                                .setDescription(`User ${userToRemove.tag} removed from ticket <#${ticketChannel.id}> by ${interaction.user.tag}.`)
+                                .setColor(0xffa500)
+                                .setTimestamp()
+                        ]
+                    });
+                }
+            } catch (error) {
+                console.error('Error removing user from ticket:', error);
+                await interaction.channel.send({
+                    embeds: [
+                        new EmbedBuilder()
+                            .setDescription(`❌ Failed to remove <@${userToRemove.id}> from the ticket: \`${error.message}\`.`)
+                            .setColor(0xff0000)
+                    ]
+                });
+            }
+            m.delete().catch(e => console.error("Could not delete staff message:", e));
+        });
+
+        collector.on('end', collected => {
+            if (collected.size === 0) {
+                interaction.channel.send({
+                    embeds: [
+                        new EmbedBuilder()
+                            .setDescription('No user was mentioned in time. Remove user operation cancelled.')
+                            .setColor(0xffa500)
+                    ]
+                }).catch(e => console.error("Error sending collector end message:", e));
+            }
+        });
+    }
+
+    // --- Transcript Ticket Logic ---
+    else if (interaction.customId === 'transcript_ticket') {
+        if (!ticketInfo) {
+            return interaction.editReply({ content: 'This does not appear to be an active ticket channel.', ephemeral: true });
+        }
+        if (!isStaff) {
+            return interaction.editReply({ content: 'Only support staff can generate ticket transcripts.', ephemeral: true });
+        }
+
+        await interaction.editReply({ content: 'Generating transcript... This might take a moment.', ephemeral: true });
+
+        try {
+            const messages = await ticketChannel.messages.fetch({ limit: 100 }); // Fetch last 100 messages
+            const transcript = messages.reverse().map(m =>
+                `${new Date(m.createdTimestamp).toLocaleString()} - ${m.author.tag}: ${m.cleanContent}`
+            ).join('\n');
+
+            const transcriptBuffer = Buffer.from(transcript, 'utf8');
+            const attachment = new AttachmentBuilder(transcriptBuffer, { name: `${ticketChannel.name}-transcript.txt` });
+
+            const logChannel = await interaction.guild.channels.fetch(TICKET_LOG_CHANNEL_ID);
+            if (logChannel && logChannel.type === ChannelType.GuildText) {
+                await logChannel.send({
+                    embeds: [
+                        new EmbedBuilder()
+                            .setTitle('Ticket Transcript Generated 📄')
+                            .setDescription(`Transcript for ticket <#${ticketChannel.id}> (\`${ticketChannel.name}\`) generated by ${interaction.user.tag}.`)
+                            .setColor(0x3498db) // Blue
+                            .setTimestamp()
+                    ],
+                    files: [attachment]
+                });
+                await interaction.followUp({ content: 'Transcript sent to the log channel!', ephemeral: true });
+            } else {
+                await interaction.followUp({ content: 'Could not find the log channel to send the transcript. Please ensure it\'s configured correctly.', ephemeral: true });
+            }
+
+        } catch (error) {
+            console.error('Error generating transcript:', error);
+            await interaction.followUp({ content: `Failed to generate transcript: \`${error.message}\`.`, ephemeral: true });
+        }
+    }
 });
+
+
+// === Login ===
 client.login(TOKEN);
+
 // === Keepalive Server ===
+// This helps keep the bot alive on platforms like Render, Replit, etc.
 const app = express();
-app.get('/', (req, res) => res.send('Bot is running.'));
-app.listen(3000, () => console.log('Express server listening on port 3000'));
+app.get('/', (req, res) => {
+    res.send('Bot is alive!');
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`Keepalive server listening on port ${PORT}`);
+});
