@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, Partials, AttachmentBuilder, EmbedBuilder, ChannelType } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, AttachmentBuilder, EmbedBuilder, ChannelType, PermissionsBitField, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -8,11 +8,16 @@ const express = require('express');
 
 // === Config & Constants ===
 const TOKEN = process.env.TOKEN || 'YOUR_BOT_TOKEN'; // Use env or fallback
-const OWNER_ID = '1110864648787480656'; // Your Discord User ID
+const OWNER_ID = '1110864648787480656'; // Your Discord User ID - ONLY THIS USER CAN SETUP THE TICKET PANEL
 const AUTHORIZED_USERS = ['1110864648787480656', '1212961835582623755', '1333798275601662056']; // Add IDs of users who can use admin commands
-const CSEND_REQUIRED_ROLE_ID = '1374250200511680656'; // Example Role ID for =csend command
+const CSEND_REQUIRED_ROLE_ID = '1374250200511680656'; // Example Role ID for =csend command (NOTE: This is now overridden by STAFF_PING_ROLE_ID for =csend)
 const VOUCH_CHANNEL_ID = '1374018342444204067'; // <--- IMPORTANT: SET YOUR VOUCH CHANNEL ID HERE
 const REDEEM_ALLOWED_ROLE_ID = '1376539272714260501'; // Role ID for =redeem command
+const STAFF_PING_ROLE_ID = '1376539272714260501'; // NEW: Role ID to ping when a new ticket is created, also used for =csend permission.
+
+// NEW TICKET SYSTEM CONSTANTS
+const TICKET_CATEGORY_ID = '1385685111177089045'; // <--- IMPORTANT: REPLACE WITH YOUR TICKET CATEGORY ID
+const TICKET_LOG_CHANNEL_ID = '1385685463142240356'; // <--- IMPORTANT: REPLACE WITH YOUR TICKET LOG CHANNEL ID
 
 const DATA_DIR = './data';
 const COOKIE_DIR = './cookies';
@@ -21,14 +26,15 @@ const STOCK_PATH = './data/stock.json';
 const ROLES_PATH = './data/roles.json';
 const REDEEMED_PATH = './data/redeemed.json';
 const CHANNEL_RESTRICTIONS_PATH = './data/channelRestrictions.json';
-const COOLDOWN_PATH = './data/cooldowns.json'; // NEW: Path for cooldowns data
+const COOLDOWN_PATH = './data/cooldowns.json'; // Path for cooldowns data
+const TICKETS_PATH = './data/tickets.json'; // Path for active tickets data and panel info
 
 // === Ensure directories exist ===
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
 if (!fs.existsSync(COOKIE_DIR)) fs.mkdirSync(COOKIE_DIR);
 
 // Ensure all JSON files exist with default empty objects
-[VOUCH_PATH, STOCK_PATH, ROLES_PATH, REDEEMED_PATH, CHANNEL_RESTRICTIONS_PATH, COOLDOWN_PATH].forEach(filePath => {
+[VOUCH_PATH, STOCK_PATH, ROLES_PATH, REDEEMED_PATH, CHANNEL_RESTRICTIONS_PATH, COOLDOWN_PATH, TICKETS_PATH].forEach(filePath => {
     if (!fs.existsSync(filePath)) {
         console.log(`${path.basename(filePath)} not found, creating new one.`);
         fs.writeFileSync(filePath, JSON.stringify({}));
@@ -40,7 +46,12 @@ let rolesAllowed = {};         // { commandName: roleId }
 let stock = {};                // { category: [item1, item2, ...] }
 let redeemed = {};             // { hexCode: { redeemed: boolean, ... } }
 let channelRestrictions = {};  // { commandName: channelId }
-let cooldowns = {};            // NEW: { commandName: { duration: seconds, lastUsed: { userId: timestamp_ms } } }
+let cooldowns = {};            // { commandName: { duration: seconds, lastUsed: { userId: timestamp_ms } } }
+let activeTickets = {};        // { ticketChannelId: { userId: string, openedAt: string, reason: string } }
+let ticketPanelInfo = {        // NEW: Stores ticket panel message and channel IDs
+    channelId: null,
+    messageId: null
+};
 
 // Stores generated unique codes: { hexCode: { redeemed: boolean, category: string, stockName: string, generatedBy: string, timestamp: string } }
 const generatedCodes = {}; // In-memory for current session
@@ -61,8 +72,8 @@ const ALL_STATIC_COMMAND_NAMES = new Set([
     'removestock',
     'add',
     'remove',
-    'stock',
-    'stockall',
+    'stockoverview', // Renamed from stock
+    'stock',         // Renamed from stockall
     'cstock',
     'upload',
     'csend',
@@ -74,8 +85,13 @@ const ALL_STATIC_COMMAND_NAMES = new Set([
     'unrestrict',
     'cremove',
     'mvouch',
-    'cool', // NEW
-    'timesaved' // NEW consolidated restore command
+    'cool',
+    'timesaved',
+    'ticket',
+    'newticket',
+    'closeticket',
+    'help',
+    'setuppanel' // NEW
 ]);
 
 
@@ -95,8 +111,16 @@ function saveJSON(filepath, data) {
 // Specific loaders/savers for clarity
 function loadVouches() { return loadJSON(VOUCH_PATH); }
 function saveVouches(data) { saveJSON(VOUCH_PATH, data); }
-function loadCooldowns() { return loadJSON(COOLDOWN_PATH); } // NEW: Cooldowns loader
-function saveCooldowns(data) { saveJSON(COOLDOWN_PATH, data); } // NEW: Cooldowns saver
+function loadCooldowns() { return loadJSON(COOLDOWN_PATH); }
+function saveCooldowns(data) { saveJSON(COOLDOWN_PATH, data); }
+function loadTicketsData() { // NEW: Consolidated ticket data loader
+    const data = loadJSON(TICKETS_PATH, { activeTickets: {}, ticketPanelInfo: { channelId: null, messageId: null } });
+    activeTickets = data.activeTickets || {};
+    ticketPanelInfo = data.ticketPanelInfo || { channelId: null, messageId: null };
+}
+function saveTicketsData() { // NEW: Consolidated ticket data saver
+    saveJSON(TICKETS_PATH, { activeTickets, ticketPanelInfo });
+}
 
 // Main data loader/saver
 function loadData() {
@@ -104,14 +128,16 @@ function loadData() {
     redeemed = loadJSON(REDEEMED_PATH);
     rolesAllowed = loadJSON(ROLES_PATH);
     channelRestrictions = loadJSON(CHANNEL_RESTRICTIONS_PATH);
-    cooldowns = loadCooldowns(); // NEW: Load cooldowns
+    cooldowns = loadCooldowns();
+    loadTicketsData(); // Load active tickets and panel info
 }
 function saveData() {
     saveJSON(STOCK_PATH, stock);
     saveJSON(REDEEMED_PATH, redeemed);
     saveJSON(ROLES_PATH, rolesAllowed);
     saveJSON(CHANNEL_RESTRICTIONS_PATH, channelRestrictions);
-    saveCooldowns(cooldowns); // NEW: Save cooldowns
+    saveCooldowns(cooldowns);
+    saveTicketsData(); // Save active tickets and panel info
 }
 
 // === File Stock Tracking (for cookies) ===
@@ -152,18 +178,193 @@ const client = new Client({
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.DirectMessages,
-        GatewayIntentBits.GuildMembers, // ADDED: Guild Members Intent
+        GatewayIntentBits.GuildMembers,
     ],
-    partials: [Partials.Channel, Partials.Message, Partials.GuildMember], // ADDED: Guild Member Partial
+    partials: [Partials.Channel, Partials.Message, Partials.GuildMember],
 });
 
-client.once('ready', () => {
+client.once('ready', async () => {
     console.log(`✅ Logged in as ${client.user.tag}`);
+    // Attempt to restore ticket panel message if info exists
+    if (ticketPanelInfo.channelId && ticketPanelInfo.messageId) {
+        try {
+            const channel = await client.channels.fetch(ticketPanelInfo.channelId);
+            if (channel && channel.isTextBased()) {
+                await channel.messages.fetch(ticketPanelInfo.messageId);
+                console.log('Ticket panel message fetched successfully.');
+            }
+        } catch (error) {
+            console.error('Failed to fetch ticket panel message, it might have been deleted:', error.message);
+            ticketPanelInfo = { channelId: null, messageId: null };
+            saveTicketsData();
+        }
+    }
 });
 
 function generateHexCode() {
     return Math.random().toString(16).substring(2, 8).toUpperCase();
 }
+
+// Function to check if user is authorized
+const isAuthorized = (userId) => AUTHORIZED_USERS.includes(userId);
+
+// Reusable function to send profile embed
+async function sendProfileEmbed(channel, user) {
+    const vouches = loadVouches();
+    const data = vouches[user.id];
+    const embed = new EmbedBuilder().setColor(0x2ecc71);
+
+    if (!data) {
+        embed.setTitle('Profile Not Found ℹ️')
+             .setDescription(`${user.tag} has not received any vouches or reviews yet.`);
+        return channel.send({ embeds: [embed] });
+    }
+
+    embed.setTitle(`${user.tag}'s Vouch & Review Profile`)
+         .setThumbnail(user.displayAvatarURL())
+         .addFields(
+             { name: '✅ Positive Reviews', value: `${data.positiveCount || 0}`, inline: true },
+             { name: '❌ Negative Reviews', value: `${data.negativeCount || 0}`, inline: true },
+             { name: 'Last Reviewed On', value: `${data.lastVouched || 'N/A'}`, inline: false }
+         );
+
+    const regularPositiveReasons = data.reasons.filter(r => r.type === 'positive');
+    const regularNegativeReasons = data.reasons.filter(r => r.type === 'negative');
+    const manualPositiveReasons = data.reasons.filter(r => r.type === 'manual_positive');
+    const manualNegativeReasons = data.reasons.filter(r => r.type === 'manual_negative');
+
+    const allPositiveReasons = [...regularPositiveReasons, ...manualPositiveReasons];
+    const allNegativeReasons = [...regularNegativeReasons, ...manualNegativeReasons];
+
+    if (allPositiveReasons.length > 0) {
+        embed.addFields({
+            name: 'Recent Positive Reviews',
+            value: allPositiveReasons
+                .slice(-3)
+                .reverse()
+                .map((r, i) => `**${allPositiveReasons.length - i}.** By: ${r.by}\nReason: *"${r.reason}"*\nDate: (${r.date})`)
+                .join('\n\n') || 'No recent positive reviews.',
+            inline: false
+        });
+    }
+
+    if (allNegativeReasons.length > 0) {
+        embed.addFields({
+            name: 'Recent Negative Reviews',
+            value: allNegativeReasons
+                .slice(-3)
+                .reverse()
+                .map((r, i) => `**${allNegativeReasons.length - i}.** By: ${r.by}\nReason: *"${r.reason}"*\nDate: (${r.date})`)
+                .join('\n\n') || 'No recent negative reviews.',
+            inline: false
+        });
+    }
+    
+    if (allPositiveReasons.length === 0 && allNegativeReasons.length === 0) {
+        embed.addFields({ name: 'Recent Reviews', value: 'No recent reviews.', inline: false });
+    }
+
+    embed.setFooter({ text: `User ID: ${user.id}` })
+         .setTimestamp();
+
+    return channel.send({ embeds: [embed] });
+}
+
+
+// Reusable ticket creation logic
+async function createTicketChannel(member, guild, reason = 'No reason provided') {
+    const embed = new EmbedBuilder().setColor(0x3498db);
+
+    if (!TICKET_CATEGORY_ID || !TICKET_LOG_CHANNEL_ID) {
+        embed.setTitle('Ticket System Not Configured ⚙️')
+             .setDescription('Ticket system constants (TICKET_CATEGORY_ID, TICKET_LOG_CHANNEL_ID) are not set. Please configure them in the bot\'s code.');
+        return { success: false, embed };
+    }
+
+    const existingTicket = Object.values(activeTickets).find(ticket => ticket.userId === member.id);
+    if (existingTicket) {
+        embed.setTitle('Ticket Already Open ⚠️')
+             .setDescription(`You already have an active ticket: <#${Object.keys(activeTickets).find(channelId => activeTickets[channelId].userId === member.id)}>`);
+        return { success: false, embed };
+    }
+
+    const ticketChannelName = `ticket-${member.user.username.toLowerCase().replace(/[^a-z0-9-]/g, '-')}`;
+
+    try {
+        const ticketChannel = await guild.channels.create({
+            name: ticketChannelName,
+            type: ChannelType.GuildText,
+            parent: TICKET_CATEGORY_ID,
+            permissionOverwrites: [
+                {
+                    id: guild.id, // @everyone role
+                    deny: [PermissionsBitField.Flags.ViewChannel]
+                },
+                {
+                    id: member.id,
+                    allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory]
+                },
+                {
+                    id: client.user.id, // Bot itself
+                    allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory, PermissionsBitField.Flags.ManageChannels]
+                },
+                {
+                    id: STAFF_PING_ROLE_ID, // Staff role can view and manage tickets
+                    allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory]
+                }
+            ]
+        });
+
+        activeTickets[ticketChannel.id] = {
+            userId: member.id,
+            openedAt: new Date().toISOString(),
+            reason: reason
+        };
+        saveTicketsData();
+
+        // Ping the user who created the ticket
+        await ticketChannel.send(`Welcome, ${member.toString()}!`);
+
+        // Display the user's profile
+        await sendProfileEmbed(ticketChannel, member.user);
+
+        // Ping the staff role
+        await ticketChannel.send(`<@&${STAFF_PING_ROLE_ID}>`);
+
+        const welcomeEmbed = new EmbedBuilder()
+            .setTitle('New Support Ticket Opened! 🎫')
+            .setDescription(`Hello ${member},\n\nOur staff will be with you shortly. Please describe your issue in detail here.\n\nReason: **${reason}**`)
+            .setColor(0x2ecc71) // Green aura for ticket creation
+            .setFooter({ text: `Ticket created by ${member.user.tag}` })
+            .setTimestamp();
+
+        ticketChannel.send({ embeds: [welcomeEmbed] });
+
+        // Log to a dedicated channel
+        if (TICKET_LOG_CHANNEL_ID) {
+            const logChannel = await guild.channels.cache.get(TICKET_LOG_CHANNEL_ID);
+            if (logChannel) {
+                logChannel.send({
+                    embeds: [
+                        new EmbedBuilder()
+                            .setTitle('Ticket Opened 📝')
+                            .setDescription(`Ticket ${ticketChannel} opened by ${member.user} for reason: \`${reason}\``)
+                            .setColor(0x00ff00)
+                            .setTimestamp()
+                    ]
+                });
+            }
+        }
+        return { success: true, embed: new EmbedBuilder().setTitle('Ticket Created! ✅').setDescription(`Your support ticket has been created: ${ticketChannel}\n\nPlease explain your issue there.`).setColor(0x007bff) };
+
+    } catch (error) {
+        console.error('Error creating ticket:', error);
+        embed.setTitle('Error Creating Ticket ❌')
+             .setDescription(`An error occurred while creating your ticket: \`${error.message}\``);
+        return { success: false, embed };
+    }
+}
+
 
 // Function to handle dynamic stock generation commands (e.g., =fgen, =pgen)
 async function handleDynamicGenCommand(msg, category) {
@@ -227,11 +428,7 @@ async function handleDynamicGenCommand(msg, category) {
                 new EmbedBuilder()
                     .setColor(0x2ecc71)
                     .setTitle('✨ Your Generated Stock Code!')
-                    .setDescription(
-  `**🛡 FIRST VERIFY URSELF** [CLICK HERE](https://link-target.net/1365026/HglgZcFWcLqV)\n\n` +
-  `🎁 Here is your unique code for a **${category}** item: \`${hexCode}\`\n\n` +
-  `🎫 To view details, open a ticket and ping our staff.`
-)                   
+                    .setDescription(`Here is your unique code for a **${category}** item: \`${hexCode}\`\n\n**Item:** \`${stockItem}\`\n\nTo view details about this item, use: \`=redeem ${hexCode}\``)
                     .setFooter({ text: `Generated by ${client.user.tag}` })
                     .setTimestamp()
             ]
@@ -247,7 +444,7 @@ async function handleDynamicGenCommand(msg, category) {
     } catch (dmError) {
         console.error(`Could not DM user ${msg.author.tag}:`, dmError);
         embed.setTitle('DM Failed ⚠️')
-             .setDescription(`I could not send you the code in DMs. Please ensure your DMs are open for this server.`)
+             .setDescription(`I could not send you the code in DMs. Please ensure your DMs are open for this server.\n\nYour code (for debugging): \`${hexCode}\`\n**Item:** \`${stockItem}\``)
              .setColor(0xe67e22);
         return msg.channel.send({ embeds: [embed] });
     }
@@ -255,7 +452,7 @@ async function handleDynamicGenCommand(msg, category) {
 
 
 // === Main message handler ===
-async function handleMessage(message) {
+client.on('messageCreate', async message => {
     if (message.author.bot) return;
 
     const args = message.content.trim().split(/\s+/);
@@ -264,33 +461,56 @@ async function handleMessage(message) {
 
     const embed = new EmbedBuilder().setColor(0x3498db); // Default embed color
 
-    // Function to check if user is authorized
-    const isAuthorized = (userId) => AUTHORIZED_USERS.includes(userId);
-
-    // --- Guild Context Check (NEW) ---
-    // Many commands require message.member or message.guild.permissions, etc.
-    // If it's not a guild message, these properties will be null.
-    // We explicitly allow =backup to proceed without a guild context check, as it DMs the user.
-    // All other commands that manage server data or check roles/permissions should be restricted to guilds.
+    // --- Guild Context Check ---
     if (!message.guild && commandWithoutPrefix !== 'backup') {
-        // You can send a message in DM if you want, or just ignore it.
-        // For simplicity, we'll ignore commands that aren't =backup if they're in DMs.
         if (message.channel.type === ChannelType.DM) {
             embed.setTitle('Command Restricted 🚫')
                  .setDescription('This command can only be used in a server channel.');
             return message.channel.send({ embeds: [embed] });
         }
-        return; // For messages not in DMs but still not in a guild (rare, but good for safety)
+        return;
     }
 
-    // After the guild check, message.member should be available for guild messages.
-    // If message.member is still null here for a guild message, it indicates a caching/intent issue,
-    // but the previous fixes should largely mitigate this for common scenarios.
-    // For specific commands that require message.member, add additional check if needed.
-    // For example, if (!message.member) { return message.channel.send('Could not fetch member data.'); }
+    // --- Handle =pls command in tickets ---
+    if (cmd === '=pls' && message.channel.type === ChannelType.GuildText && activeTickets[message.channel.id]) {
+        try {
+            embed.setTitle('🛑 Command Not Allowed in Tickets')
+                 .setDescription('The `PLS` command is not allowed in ticket channels. This ticket will be deleted.');
+            await message.channel.send({ embeds: [embed] });
+            await message.delete(); // Delete the =pls message
 
+            const ticketData = activeTickets[message.channel.id];
+            const logEmbed = new EmbedBuilder()
+                .setTitle('Ticket Auto-Deleted! 💥')
+                .setDescription(`Ticket channel ${message.channel.name} (ID: ${message.channel.id}) was auto-deleted because \`=pls\` command was detected.`)
+                .addFields(
+                    { name: 'Opened By', value: `<@${ticketData.userId}>`, inline: true },
+                    { name: 'Reason', value: ticketData.reason, inline: true }
+                )
+                .setColor(0xffa500) // Orange for warning/auto-action
+                .setTimestamp();
 
-    // --- Cooldown Check (NEW) ---
+            if (TICKET_LOG_CHANNEL_ID) {
+                const logChannel = await message.guild.channels.cache.get(TICKET_LOG_CHANNEL_ID);
+                if (logChannel) {
+                    logChannel.send({ embeds: [logEmbed] });
+                }
+            }
+
+            delete activeTickets[message.channel.id];
+            saveTicketsData(); // Save updated tickets
+            await message.channel.delete('`=pls` command detected in ticket.');
+
+        } catch (error) {
+            console.error('Error handling =pls in ticket or deleting ticket:', error);
+            if (message.channel.viewable) {
+                message.channel.send({ content: 'An error occurred while trying to delete the ticket due to `=pls` command.' });
+            }
+        }
+        return; // Prevent further processing if =pls is detected in a ticket
+    }
+
+    // --- Cooldown Check ---
     if (cooldowns[commandWithoutPrefix]) {
         const cooldownDuration = cooldowns[commandWithoutPrefix].duration;
         const lastUsedTimestamp = cooldowns[commandWithoutPrefix].lastUsed[message.author.id] || 0;
@@ -310,7 +530,7 @@ async function handleMessage(message) {
             cooldowns[commandWithoutPrefix].lastUsed = {};
         }
         cooldowns[commandWithoutPrefix].lastUsed[message.author.id] = Date.now();
-        saveCooldowns(cooldowns); // Save updated cooldowns
+        saveCooldowns(cooldowns);
     }
 
     // --- Channel Restriction Check ---
@@ -329,6 +549,223 @@ async function handleMessage(message) {
         return;
     }
 
+    // --- NEW: Ticket System Commands ---
+    if (cmd === '=ticket' || cmd === '=newticket') {
+        if (!message.guild) {
+            embed.setTitle('Command Restricted 🚫')
+                 .setDescription('This command can only be used in a server channel.');
+            return message.channel.send({ embeds: [embed] });
+        }
+        const reason = args.slice(1).join(' ');
+        const result = await createTicketChannel(message.member, message.guild, reason);
+        return message.channel.send({ embeds: [result.embed] });
+    }
+
+    if (cmd === '=closeticket') {
+        if (!message.guild) {
+            embed.setTitle('Command Restricted 🚫')
+                 .setDescription('This command can only be used in a server channel.');
+            return message.channel.send({ embeds: [embed] });
+        }
+
+        const channelIdToClose = message.channel.id;
+        const ticketData = activeTickets[channelIdToClose];
+
+        if (!ticketData) {
+            embed.setTitle('Not a Ticket Channel ℹ️')
+                 .setDescription('This command can only be used in an active ticket channel.');
+            return message.channel.send({ embeds: [embed] });
+        }
+
+        const isAuthorizedToClose = message.author.id === ticketData.userId || message.member.permissions.has(PermissionsBitField.Flags.ManageChannels) || isAuthorized(message.author.id);
+
+        if (!isAuthorizedToClose) {
+            embed.setTitle('Permission Denied 🚫')
+                 .setDescription('You need to be the ticket creator, an authorized user, or have `Manage Channels` permission to close this ticket.');
+            return message.channel.send({ embeds: [embed] });
+        }
+
+        try {
+            const ticketChannel = message.guild.channels.cache.get(channelIdToClose);
+            if (ticketChannel) {
+                embed.setTitle('Closing Ticket... ⏳')
+                     .setDescription('This ticket will be closed shortly.')
+                     .setColor(0xffa500); // Orange aura for closing
+                await message.channel.send({ embeds: [embed] });
+
+                const logEmbed = new EmbedBuilder()
+                    .setTitle('Ticket Closed 🗑️')
+                    .setDescription(`Ticket channel ${ticketChannel.name} (ID: ${channelIdToClose}) closed by ${message.author}.`)
+                    .addFields(
+                        { name: 'Opened By', value: `<@${ticketData.userId}>`, inline: true },
+                        { name: 'Reason', value: ticketData.reason, inline: true },
+                        { name: 'Opened At', value: new Date(ticketData.openedAt).toLocaleString(), inline: false }
+                    )
+                    .setColor(0xff0000) // Red aura for closed ticket log
+                    .setTimestamp();
+
+                if (TICKET_LOG_CHANNEL_ID) {
+                    const logChannel = await message.guild.channels.cache.get(TICKET_LOG_CHANNEL_ID);
+                    if (logChannel) {
+                        logChannel.send({ embeds: [logEmbed] });
+                    }
+                }
+
+                delete activeTickets[channelIdToClose];
+                saveTicketsData();
+
+                await ticketChannel.delete('Ticket closed by user or staff.');
+            }
+        } catch (error) {
+            console.error('Error closing ticket:', error);
+            embed.setTitle('Error Closing Ticket ❌')
+                 .setDescription(`An error occurred while closing the ticket: \`${error.message}\``);
+            return message.channel.send({ embeds: [embed] });
+        }
+        return;
+    }
+
+    // NEW: =setuppanel command
+    if (cmd === '=setuppanel') {
+        if (message.author.id !== OWNER_ID) {
+            embed.setTitle('Permission Denied 🚫')
+                 .setDescription('Only the bot owner can set up the ticket panel.');
+            return message.channel.send({ embeds: [embed] });
+        }
+        if (!message.guild) {
+            embed.setTitle('Command Restricted 🚫')
+                 .setDescription('This command can only be used in a server channel.');
+            return message.channel.send({ embeds: [embed] });
+        }
+        if (!TICKET_CATEGORY_ID || !TICKET_LOG_CHANNEL_ID) {
+            embed.setTitle('Ticket System Not Configured ⚙️')
+                 .setDescription('Ticket system constants (TICKET_CATEGORY_ID, TICKET_LOG_CHANNEL_ID) are not set. Please configure them in the bot\'s code.');
+            return message.channel.send({ embeds: [embed] });
+        }
+
+        const panelEmbed = new EmbedBuilder()
+            .setTitle('🎫 Create a New Support Ticket')
+            .setDescription('Need assistance? Click the button below to open a private support ticket with our staff.')
+            .setColor(0x8e44ad) // Purple aura for the panel
+            .setFooter({ text: 'Click the button to get started!' });
+
+        const row = new ActionRowBuilder()
+            .addComponents(
+                new ButtonBuilder()
+                    .setCustomId('open_ticket')
+                    .setLabel('Open a Ticket')
+                    .setStyle(ButtonStyle.Primary)
+                    .setEmoji('➕'),
+            );
+
+        try {
+            if (ticketPanelInfo.channelId && ticketPanelInfo.messageId) {
+                try {
+                    const oldChannel = await client.channels.fetch(ticketPanelInfo.channelId);
+                    if (oldChannel && oldChannel.isTextBased()) {
+                        const oldMessage = await oldChannel.messages.fetch(ticketPanelInfo.messageId);
+                        await oldMessage.delete();
+                        console.log('Deleted old ticket panel message.');
+                    }
+                } catch (e) {
+                    console.warn('Could not delete old ticket panel message, it might be gone:', e.message);
+                }
+            }
+
+            const sentMessage = await message.channel.send({
+                embeds: [panelEmbed],
+                components: [row]
+            });
+
+            ticketPanelInfo.channelId = sentMessage.channel.id;
+            ticketPanelInfo.messageId = sentMessage.id;
+            saveTicketsData();
+
+            embed.setTitle('Ticket Panel Setup! ✅')
+                 .setDescription(`The ticket panel has been set up in ${message.channel}.`);
+            return message.channel.send({ embeds: [embed] });
+
+        } catch (error) {
+            console.error('Error setting up ticket panel:', error);
+            embed.setTitle('Error Setting Up Panel ❌')
+                 .setDescription(`An error occurred: \`${error.message}\``);
+            return message.channel.send({ embeds: [embed] });
+        }
+    }
+    // --- END NEW: Ticket System Commands ---
+
+
+    // --- NEW: Help Command ---
+    if (cmd === '=help') {
+        const helpEmbed = new EmbedBuilder()
+            .setTitle('📚 Bot Commands Help')
+            .setColor(0x007bff) // A nice blue
+            .setDescription('Here is a list of commands you can use. Some commands may require specific roles or permissions.');
+
+        const addCommandField = (name, description, permissionNeeded = null, adminOnly = false) => {
+            if (adminOnly && !isAuthorized(message.author.id)) return;
+            if (permissionNeeded && message.member && !message.member.permissions.has(permissionNeeded)) return;
+
+            helpEmbed.addFields({ name: name, value: description, inline: false });
+        };
+
+        // Vouch & Profile Commands
+        helpEmbed.addFields({ name: '__Vouch & Profile Commands__', value: '\u200b', inline: false });
+        addCommandField('+vouch @user <reason>', 'Add a positive vouch for a user.');
+        addCommandField('-vouch @user <reason>', 'Add a negative review for a user.');
+        addCommandField('+mvouch @user <amount> [reason]', 'Manually add positive vouches for a user.', PermissionsBitField.Flags.ManageGuild, true);
+        addCommandField('-mvouch @user <amount> [reason]', 'Manually add negative vouches for a user.', PermissionsBitField.Flags.ManageGuild, true);
+        addCommandField('=profile [@user]', 'View vouch and review profile for yourself or another user.');
+
+        // Stock Management Commands
+        helpEmbed.addFields({ name: '__Stock Management Commands__', value: '\u200b', inline: false });
+        addCommandField('=addcategory <name>', 'Create a new stock category.', PermissionsBitField.Flags.ManageGuild, true);
+        addCommandField('=categoryremove <category>', 'Remove an existing stock category, its dynamic command, and all items.', PermissionsBitField.Flags.ManageGuild, true);
+        addCommandField('=addstock <category> <stock_name>', 'Add a new item to a stock category.', PermissionsBitField.Flags.ManageGuild, true);
+        addCommandField('=removestock <category> <stock_name>', 'Remove an item from a stock category.', PermissionsBitField.Flags.ManageGuild, true);
+        helpEmbed.addFields({ name: '=stockoverview [category]', value: 'View the overview of all stock categories or detailed stock for a specific category.', inline: false }); // Swapped
+        helpEmbed.addFields({ name: '=stock', value: 'View all items across all stock categories.', inline: false }); // Swapped
+
+        // Cookie/File Management Commands
+        helpEmbed.addFields({ name: '__Cookie/File Management Commands__', value: '\u200b', inline: false });
+        addCommandField('=cstock', 'View the overview of cookie/file stock categories.');
+        addCommandField('=upload <cookie_category>', 'Upload a ZIP file of cookies/files to a specified category.', null, true);
+        addCommandField('=cremove <cookie_category>', 'Remove an entire cookie category and receive its contents as a ZIP in DMs.', PermissionsBitField.Flags.ManageGuild, true);
+        addCommandField('=csend <cookie_category> @user', 'Send a cookie/file from a category to a user\'s DMs. (Requires Staff Role)', null, false); // Updated description
+
+        // Permission & Restriction Commands
+        helpEmbed.addFields({ name: '__Permission & Restriction Commands__', value: '\u200b', inline: false });
+        addCommandField('=add <command_name_without_=> @role', 'Restrict a command to a specific role.', PermissionsBitField.Flags.ManageGuild, true);
+        addCommandField('=remove <command_name_without_=>', 'Remove role restriction for a command.', PermissionsBitField.Flags.ManageGuild, true);
+        addCommandField('=restrict <command_name_without_=> <#channel | channel_id>', 'Restrict a command to a specific channel.', PermissionsBitField.Flags.ManageGuild, true);
+        addCommandField('=unrestrict <command_name_without_=>', 'Remove channel restriction for a command.', PermissionsBitField.Flags.ManageGuild, true);
+        addCommandField('=cool <command_name_without_=> <cooldown_in_seconds>', 'Set a cooldown for a command (use 0 to remove).', null, true);
+
+        // Generation & Redemption Commands
+        helpEmbed.addFields({ name: '__Generation & Redemption Commands__', value: '\u200b', inline: false });
+        helpEmbed.addFields({ name: '`=[first_letter_of_category]gen [item_name]`', 'value': 'Dynamically generated commands (e.g., `=fgen` for \'free\' category). Generates a unique code for a stock item from the specified category and sends it to your DMs. You can also request a specific item name.', inline: false });
+        addCommandField('=redeem <hex_code>', 'Redeem a generated code to view its details (Requires Redeem Role).');
+
+        // Utility & Admin Commands
+        helpEmbed.addFields({ name: '__Utility & Admin Commands__', value: '\u200b', inline: false });
+        addCommandField('=pls', 'Makes you eligible to receive one vouch/review. (Not allowed in tickets!)');
+        addCommandField('=backup', 'Sends all bot data files to your DMs.', null, true);
+        addCommandField('=timesaved', 'Restores bot data from attached JSON files.', null, true);
+        addCommandField('=debug', 'Displays current internal bot state.', null, true);
+
+        // Ticket System Commands
+        helpEmbed.addFields({ name: '__Ticket System Commands__', value: '\u200b', inline: false });
+        addCommandField('=ticket [reason]', 'Create a new private support ticket.');
+        addCommandField('=newticket [reason]', 'Alias for =ticket.', null, false);
+        addCommandField('=closeticket', 'Close the current active ticket channel.', PermissionsBitField.Flags.ManageChannels);
+        addCommandField('=setuppanel', 'Set up the interactive ticket creation panel with a button.', null, true); // Only for OWNER_ID
+
+        helpEmbed.setFooter({ text: `Requested by ${message.author.tag}` }).setTimestamp();
+        return message.channel.send({ embeds: [helpEmbed] });
+    }
+    // --- END NEW: Help Command ---
+
+
     // --- Static Command Handling ---
     if (cmd === '+vouch' || cmd === '-vouch') {
         const user = message.mentions.users.first();
@@ -341,14 +778,12 @@ async function handleMessage(message) {
             return message.channel.send({ embeds: [embed] });
         }
 
-        // Check if the user is vouchable via =pls
         if (!plsRequests[user.id] || plsRequests[user.id].vouchUsed) {
             embed.setTitle('Cannot Vouch ℹ️')
                  .setDescription(`First, LET ${user.tag} help u!`);
             return message.channel.send({ embeds: [embed] });
         }
 
-        // Mark vouch as used for this =pls request
         plsRequests[user.id].vouchUsed = true;
 
 
@@ -384,7 +819,7 @@ async function handleMessage(message) {
     }
 
     if (cmd === '+mvouch') {
-        if (!message.member.permissions.has('ManageGuild')) {
+        if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
             embed.setTitle('Permission Denied 🚫')
                  .setDescription('You need `Manage Server` permission to use this command.');
             return message.channel.send({ embeds: [embed] });
@@ -423,7 +858,7 @@ async function handleMessage(message) {
     }
 
     if (cmd === '-mvouch') {
-        if (!message.member.permissions.has('ManageGuild')) {
+        if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
             embed.setTitle('Permission Denied 🚫')
                  .setDescription('You need `Manage Server` permission to use this command.');
             return message.channel.send({ embeds: [embed] });
@@ -470,70 +905,11 @@ async function handleMessage(message) {
 
     if (cmd === '=profile') {
         const user = message.mentions.users.first() || message.author;
-        const vouches = loadVouches();
-        const data = vouches[user.id];
-
-        if (!data) {
-            embed.setTitle('Profile Not Found ℹ️')
-                 .setDescription(`${user.tag} has not received any vouches or reviews yet.`);
-            return message.channel.send({ embeds: [embed] });
-        }
-
-        embed.setColor(0x2ecc71)
-             .setTitle(`${user.tag}'s Vouch & Review Profile`)
-             .setThumbnail(user.displayAvatarURL())
-             .addFields(
-                 { name: '✅ Positive Reviews', value: `${data.positiveCount || 0}`, inline: true },
-                 { name: '❌ Negative Reviews', value: `${data.negativeCount || 0}`, inline: true },
-                 { name: 'Last Reviewed On', value: `${data.lastVouched || 'N/A'}`, inline: false }
-             );
-
-        // Filter for regular and manual vouches/reviews
-        const regularPositiveReasons = data.reasons.filter(r => r.type === 'positive');
-        const regularNegativeReasons = data.reasons.filter(r => r.type === 'negative');
-        const manualPositiveReasons = data.reasons.filter(r => r.type === 'manual_positive');
-        const manualNegativeReasons = data.reasons.filter(r => r.type === 'manual_negative');
-
-        // Combine all positive and negative reasons for display
-        const allPositiveReasons = [...regularPositiveReasons, ...manualPositiveReasons];
-        const allNegativeReasons = [...regularNegativeReasons, ...manualNegativeReasons];
-
-        if (allPositiveReasons.length > 0) {
-            embed.addFields({
-                name: 'Recent Positive Reviews',
-                value: allPositiveReasons
-                    .slice(-3)
-                    .reverse()
-                    .map((r, i) => `**${allPositiveReasons.length - i}.** By: ${r.by}\nReason: *"${r.reason}"*\nDate: (${r.date})`)
-                    .join('\n\n') || 'No recent positive reviews.',
-                inline: false
-            });
-        }
-
-        if (allNegativeReasons.length > 0) {
-            embed.addFields({
-                name: 'Recent Negative Reviews',
-                value: allNegativeReasons
-                    .slice(-3)
-                    .reverse()
-                    .map((r, i) => `**${allNegativeReasons.length - i}.** By: ${r.by}\nReason: *"${r.reason}"*\nDate: (${r.date})`)
-                    .join('\n\n') || 'No recent negative reviews.',
-                inline: false
-            });
-        }
-        
-        if (allPositiveReasons.length === 0 && allNegativeReasons.length === 0) {
-            embed.addFields({ name: 'Recent Reviews', value: 'No recent reviews.', inline: false });
-        }
-
-        embed.setFooter({ text: `User ID: ${user.id}` })
-             .setTimestamp();
-
-        return message.channel.send({ embeds: [embed] });
+        return sendProfileEmbed(message.channel, user); // Use the reusable function
     }
 
     if (cmd === '=addcategory') {
-        if (!message.member.permissions.has('ManageGuild')) {
+        if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
             embed.setTitle('Permission Denied 🚫')
                  .setDescription('You need `Manage Server` permission to use this command.');
             return message.channel.send({ embeds: [embed] });
@@ -559,7 +935,7 @@ async function handleMessage(message) {
     }
 
     if (cmd === '=categoryremove') {
-        if (!message.member.permissions.has('ManageGuild')) {
+        if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
             embed.setTitle('Permission Denied 🚫')
                  .setDescription('You need `Manage Server` permission to use this command.');
             return message.channel.send({ embeds: [embed] });
@@ -594,7 +970,7 @@ async function handleMessage(message) {
     }
 
     if (cmd === '=addstock') {
-        if (!message.member.permissions.has('ManageGuild')) {
+        if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
             embed.setTitle('Permission Denied 🚫')
                  .setDescription('You need `Manage Server` permission to use this command.');
             return message.channel.send({ embeds: [embed] });
@@ -619,7 +995,7 @@ async function handleMessage(message) {
     }
 
     if (cmd === '=removestock') {
-        if (!message.member.permissions.has('ManageGuild')) {
+        if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
             embed.setTitle('Permission Denied 🚫')
                  .setDescription('You need `Manage Server` permission to use this command.');
             return message.channel.send({ embeds: [embed] });
@@ -653,7 +1029,7 @@ async function handleMessage(message) {
     }
 
     if (cmd === '=add') {
-        if (!message.member.permissions.has('ManageGuild')) {
+        if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
             embed.setTitle('Permission Denied 🚫')
                  .setDescription('You need `Manage Server` permission to use this command.');
             return message.channel.send({ embeds: [embed] });
@@ -682,7 +1058,7 @@ async function handleMessage(message) {
     }
 
     if (cmd === '=remove') {
-        if (!message.member.permissions.has('ManageGuild')) {
+        if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
             embed.setTitle('Permission Denied 🚫')
                  .setDescription('You need `Manage Server` permission to use this command.');
             return message.channel.send({ embeds: [embed] });
@@ -708,7 +1084,7 @@ async function handleMessage(message) {
     }
 
     if (cmd === '=restrict') {
-        if (!message.member.permissions.has('ManageGuild')) {
+        if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
             embed.setTitle('Permission Denied 🚫')
                  .setDescription('You need `Manage Server` permission to use this command.');
             return message.channel.send({ embeds: [embed] });
@@ -738,7 +1114,7 @@ async function handleMessage(message) {
     }
 
     if (cmd === '=unrestrict') {
-        if (!message.member.permissions.has('ManageGuild')) {
+        if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
             embed.setTitle('Permission Denied 🚫')
                  .setDescription('You need `Manage Server` permission to use this command.');
             return message.channel.send({ embeds: [embed] });
@@ -763,7 +1139,6 @@ async function handleMessage(message) {
         }
     }
 
-    // NEW: =cool command
     if (cmd === '=cool') {
         if (!isAuthorized(message.author.id)) {
             embed.setTitle('Authorization Required 🚫')
@@ -780,7 +1155,6 @@ async function handleMessage(message) {
             return message.channel.send({ embeds: [embed] });
         }
 
-        // Validate if it's a known command (static or dynamic)
         if (!ALL_STATIC_COMMAND_NAMES.has(commandToCool) && !dynamicCommandMap.hasOwnProperty(commandToCool)) {
             embed.setTitle('Invalid Command ⚠️')
                  .setDescription(`Command \`=${commandToCool}\` is not a recognized command.`);
@@ -800,7 +1174,7 @@ async function handleMessage(message) {
         } else {
             cooldowns[commandToCool] = {
                 duration: cooldownTimeSeconds,
-                lastUsed: cooldowns[commandToCool]?.lastUsed || {} // Preserve lastUsed if it exists
+                lastUsed: cooldowns[commandToCool]?.lastUsed || {}
             };
             saveCooldowns(cooldowns);
             embed.setTitle('Cooldown Set! ✅')
@@ -810,48 +1184,9 @@ async function handleMessage(message) {
     }
 
 
-    if (cmd === '=stock') {
-        const allCategories = Object.keys(stock);
-        if (allCategories.length === 0) {
-            embed.setTitle('No Stock 📦')
-                 .setDescription('No stock categories have been added yet.')
-                 .setColor(0x0099ff);
-            return message.channel.send({ embeds: [embed] });
-        }
-
-        const cat = args[1]?.toLowerCase();
-        if (cat) {
-            if (stock[cat]) {
-                const categoryItems = stock[cat];
-                embed.setTitle(`📦 Stock for **${cat.toUpperCase()}** (${categoryItems.length} items)`)
-                     .setDescription(categoryItems.length > 0 ? categoryItems.map(item => `\`${item}\``).join(', ') : 'This category is empty.')
-                     .setColor(0x0099ff);
-                return message.channel.send({ embeds: [embed] });
-            } else {
-                embed.setTitle('Category Not Found ❌')
-                     .setDescription(`The category \`${cat}\` does not exist.`)
-                     .setColor(0xe74c3c);
-                return message.channel.send({ embeds: [embed] });
-            }
-        }
-
-        const replyEmbed = new EmbedBuilder()
-            .setTitle('📦 Current Stock Overview')
-            .setColor(0x2c3e50);
-
-        const sortedCategories = allCategories.sort();
-
-        for (const category of sortedCategories) {
-            const items = stock[category];
-            const stockCount = items.length;
-            const fieldValue = stockCount > 0 ? `**${stockCount}** items` : '*Empty*';
-            replyEmbed.addFields({ name: category.toUpperCase(), value: fieldValue, inline: true });
-        }
-
-        return message.channel.send({ embeds: [replyEmbed] });
-    }
-
-    if (cmd === '=stockall') {
+    // --- SWAPPED COMMANDS: =stock and =stockoverview ---
+    // The old =stockall is now =stock
+    if (cmd === '=stock') { // This was previously =stockall
         const allCategories = Object.keys(stock);
         if (allCategories.length === 0) {
             embed.setTitle('No Stock 📦')
@@ -912,6 +1247,50 @@ async function handleMessage(message) {
         }
         return;
     }
+
+    // The old =stock is now =stockoverview
+    if (cmd === '=stockoverview') { // This was previously =stock
+        const allCategories = Object.keys(stock);
+        if (allCategories.length === 0) {
+            embed.setTitle('No Stock 📦')
+                 .setDescription('No stock categories have been added yet.')
+                 .setColor(0x0099ff);
+            return message.channel.send({ embeds: [embed] });
+        }
+
+        const cat = args[1]?.toLowerCase();
+        if (cat) {
+            if (stock[cat]) {
+                const categoryItems = stock[cat];
+                embed.setTitle(`📦 Stock for **${cat.toUpperCase()}** (${categoryItems.length} items)`)
+                     .setDescription(categoryItems.length > 0 ? categoryItems.map(item => `\`${item}\``).join(', ') : 'This category is empty.')
+                     .setColor(0x0099ff);
+                return message.channel.send({ embeds: [embed] });
+            } else {
+                embed.setTitle('Category Not Found ❌')
+                     .setDescription(`The category \`${cat}\` does not exist.`)
+                     .setColor(0xe74c3c);
+                return message.channel.send({ embeds: [embed] });
+            }
+        }
+
+        const replyEmbed = new EmbedBuilder()
+            .setTitle('📦 Current Stock Overview')
+            .setColor(0x2c3e50);
+
+        const sortedCategories = allCategories.sort();
+
+        for (const category of sortedCategories) {
+            const items = stock[category];
+            const stockCount = items.length;
+            const fieldValue = stockCount > 0 ? `**${stockCount}** items` : '*Empty*';
+            replyEmbed.addFields({ name: category.toUpperCase(), value: fieldValue, inline: true });
+        }
+
+        return message.channel.send({ embeds: [replyEmbed] });
+    }
+    // --- END SWAPPED COMMANDS ---
+
 
     if (cmd === '=cstock') {
         updateFileStock();
@@ -997,8 +1376,8 @@ async function handleMessage(message) {
         }
     }
 
-    if (cmd === '=cremove') { // MODIFIED COMMAND: =cremove to remove a whole category and send as zip
-        if (!message.member.permissions.has('ManageGuild')) {
+    if (cmd === '=cremove') {
+        if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
             embed.setTitle('Permission Denied 🚫')
                  .setDescription('You need `Manage Server` permission to use this command.');
             return message.channel.send({ embeds: [embed] });
@@ -1033,26 +1412,23 @@ async function handleMessage(message) {
             const zipFileName = `${category}_cookies_${Date.now()}.zip`;
             const tempZipPath = path.join('./', zipFileName);
 
-            // Add all files from the category to the zip
             filesInCategories.forEach(file => {
                 const filePath = path.join(categoryPath, file);
-                zip.addLocalFile(filePath, category); // Add to a folder named 'category' inside the zip
+                zip.addLocalFile(filePath, category);
             });
 
             zip.writeZip(tempZipPath);
 
-            // Send the ZIP to the user's DM
             const attachment = new AttachmentBuilder(tempZipPath, { name: zipFileName });
             await message.author.send({
                 content: `Here are all the cookie files from the removed category \`${category}\`:`,
                 files: [attachment]
             });
 
-            // Delete the original category directory and its contents
             fs.rmSync(categoryPath, { recursive: true, force: true });
-            fs.unlinkSync(tempZipPath); // Clean up temp zip file
+            fs.unlinkSync(tempZipPath);
 
-            updateFileStock(); // Update stock after removal
+            updateFileStock();
 
             embed.setTitle('Category Removed and Sent! ✅')
                  .setDescription(`All files from category \`${category}\` have been removed and sent to your DMs in a ZIP file.`);
@@ -1068,9 +1444,10 @@ async function handleMessage(message) {
 
 
     if (cmd === '=csend') {
-        if (!message.member.permissions.has('ManageGuild')) {
+        // NEW: Role permission check for =csend
+        if (!message.member.roles.cache.has(STAFF_PING_ROLE_ID)) {
             embed.setTitle('Permission Denied 🚫')
-                 .setDescription('You need `Manage Server` permission to use this command.');
+                 .setDescription(`You need the role <@&${STAFF_PING_ROLE_ID}> to use this command.`);
             return message.channel.send({ embeds: [embed] });
         }
 
@@ -1117,8 +1494,7 @@ async function handleMessage(message) {
         }
     }
 
-    if (cmd === '=redeem') { // MODIFIED: Only allows redemption by hex code and by specific role
-        // NEW: Role permission check for =redeem
+    if (cmd === '=redeem') {
         if (!message.member.roles.cache.has(REDEEM_ALLOWED_ROLE_ID)) {
             embed.setTitle('Permission Denied 🚫')
                  .setDescription(`You need the role <@&${REDEEM_ALLOWED_ROLE_ID}> to use this command.`);
@@ -1139,7 +1515,7 @@ async function handleMessage(message) {
                      .setDescription(`The code \`${code}\` has already been redeemed.`);
                 return message.channel.send({ embeds: [embed] });
             }
-            codeData.redeemed = true; // Mark as redeemed
+            codeData.redeemed = true;
 
             embed.setTitle('Code Redeemed! ✅')
                  .setDescription(`You have successfully redeemed code: \`${code}\`\n\nThis code was generated for a **${codeData.category.toUpperCase()}** item: \`${codeData.stockName}\`.`)
@@ -1157,8 +1533,6 @@ async function handleMessage(message) {
     }
 
     if (cmd === '=pls') {
-        // NEW: Set the user as vouchable for one vouch
-        // Clear any previous state for this user to allow a new vouch
         plsRequests[message.author.id] = { timestamp: Date.now(), vouchUsed: false };
 
         embed.setTitle('Cheers for our staff! 🎉')
@@ -1179,14 +1553,15 @@ async function handleMessage(message) {
             const rolesAttachment = new AttachmentBuilder(ROLES_PATH, { name: 'roles.json' });
             const redeemedAttachment = new AttachmentBuilder(REDEEMED_PATH, { name: 'redeemed.json' });
             const channelRestrictionsAttachment = new AttachmentBuilder(CHANNEL_RESTRICTIONS_PATH, { name: 'channelRestrictions.json' });
-            const cooldownsAttachment = new AttachmentBuilder(COOLDOWN_PATH, { name: 'cooldowns.json' }); // NEW: Cooldowns backup
+            const cooldownsAttachment = new AttachmentBuilder(COOLDOWN_PATH, { name: 'cooldowns.json' });
+            const ticketsAttachment = new AttachmentBuilder(TICKETS_PATH, { name: 'tickets.json' });
 
             await message.author.send({
                 content: 'Here are your backup files:',
-                files: [vouchesAttachment, stockAttachment, rolesAttachment, redeemedAttachment, channelRestrictionsAttachment, cooldownsAttachment]
+                files: [vouchesAttachment, stockAttachment, rolesAttachment, redeemedAttachment, channelRestrictionsAttachment, cooldownsAttachment, ticketsAttachment]
             });
             embed.setTitle('Backup Sent! ✅')
-                 .setDescription('Your bot data files have been sent to your DMs (`vouches.json`, `stock.json`, `roles.json`, `redeemed.json`, `channelRestrictions.json`, `cooldowns.json`).');
+                 .setDescription('Your bot data files have been sent to your DMs (`vouches.json`, `stock.json`, `roles.json`, `redeemed.json`, `channelRestrictions.json`, `cooldowns.json`, `tickets.json`).');
             return message.channel.send({ embeds: [embed] });
         } catch (dmError) {
             console.error(`Could not DM user ${message.author.tag} for backup:`, dmError);
@@ -1196,7 +1571,6 @@ async function handleMessage(message) {
         }
     }
 
-    // NEW CONSOLIDATED COMMAND: =timesaved
     if (cmd === '=timesaved') {
         if (!isAuthorized(message.author.id)) {
             embed.setTitle('Authorization Required 🚫')
@@ -1207,13 +1581,13 @@ async function handleMessage(message) {
         const attachments = message.attachments;
         if (attachments.size === 0) {
             embed.setTitle('Invalid Usage ❌')
-                 .setDescription('Please attach one or more JSON files to restore data. Accepted files: `vouches.json`, `stock.json`, `roles.json`, `redeemed.json`, `channelRestrictions.json`, `cooldowns.json`.');
+                 .setDescription('Please attach one or more JSON files to restore data. Accepted files: `vouches.json`, `stock.json`, `roles.json`, `redeemed.json`, `channelRestrictions.json`, `cooldowns.json`, `tickets.json`.');
             return message.channel.send({ embeds: [embed] });
         }
 
         const allowedFileNames = [
             'vouches.json', 'stock.json', 'roles.json',
-            'redeemed.json', 'channelRestrictions.json', 'cooldowns.json'
+            'redeemed.json', 'channelRestrictions.json', 'cooldowns.json', 'tickets.json'
         ];
         let restoredFiles = [];
         let errorMessages = [];
@@ -1223,7 +1597,7 @@ async function handleMessage(message) {
                 errorMessages.push(`Skipping invalid file: \`${attachment.name}\`. Only allowed JSON files can be restored.`);
                 continue;
             }
-            if (attachment.size > 1024 * 1024 * 5) { // 5MB limit for each file
+            if (attachment.size > 1024 * 1024 * 5) {
                 errorMessages.push(`Skipping \`${attachment.name}\` - file too large (Max 5MB).`);
                 continue;
             }
@@ -1243,8 +1617,8 @@ async function handleMessage(message) {
                         break;
                     case 'stock.json':
                         stock = newData;
-                        saveData(); // Saves all data including stock
-                        updateDynamicCommandMap(); // Re-populate dynamic commands based on new stock
+                        saveData();
+                        updateDynamicCommandMap();
                         break;
                     case 'roles.json':
                         rolesAllowed = newData;
@@ -1258,9 +1632,14 @@ async function handleMessage(message) {
                         channelRestrictions = newData;
                         saveData();
                         break;
-                    case 'cooldowns.json': // NEW: Restore cooldowns
+                    case 'cooldowns.json':
                         cooldowns = newData;
                         saveData();
+                        break;
+                    case 'tickets.json':
+                        activeTickets = newData.activeTickets || {};
+                        ticketPanelInfo = newData.ticketPanelInfo || { channelId: null, messageId: null };
+                        saveTicketsData();
                         break;
                 }
                 restoredFiles.push(attachment.name);
@@ -1301,7 +1680,9 @@ async function handleMessage(message) {
         const fileStockStr = JSON.stringify(fileStock, null, 2);
         const channelRestrictionsStr = JSON.stringify(channelRestrictions, null, 2);
         const plsRequestsStr = JSON.stringify(plsRequests, null, 2);
-        const cooldownsStr = JSON.stringify(cooldowns, null, 2); // NEW: Add cooldowns to debug
+        const cooldownsStr = JSON.stringify(cooldowns, null, 2);
+        const activeTicketsStr = JSON.stringify(activeTickets, null, 2);
+        const ticketPanelInfoStr = JSON.stringify(ticketPanelInfo, null, 2); // NEW: Add panel info to debug
 
         const splitStringForEmbed = (str, fieldName) => {
             const maxLen = 1000;
@@ -1323,18 +1704,32 @@ async function handleMessage(message) {
         debugEmbed.addFields(...splitStringForEmbed(fileStockStr, 'File Stock'));
         debugEmbed.addFields(...splitStringForEmbed(channelRestrictionsStr, 'Channel Restrictions'));
         debugEmbed.addFields(...splitStringForEmbed(plsRequestsStr, 'PLS Requests (in-memory)'));
-        debugEmbed.addFields(...splitStringForEmbed(cooldownsStr, 'Cooldowns')); // NEW debug field
+        debugEmbed.addFields(...splitStringForEmbed(cooldownsStr, 'Cooldowns'));
+        debugEmbed.addFields(...splitStringForEmbed(activeTicketsStr, 'Active Tickets'));
+        debugEmbed.addFields(...splitStringForEmbed(ticketPanelInfoStr, 'Ticket Panel Info')); // NEW debug field
 
         return message.channel.send({ embeds: [debugEmbed] });
     }
-}
-client.login(TOKEN);
+});
 
-// Attach the main message handler to the client
-client.on('messageCreate', handleMessage);
+// === NEW: Interaction Listener for Buttons ===
+client.on('interactionCreate', async interaction => {
+    if (!interaction.isButton()) return;
+
+    if (interaction.customId === 'open_ticket') {
+        // Defer the reply to prevent "This interaction failed" error
+        await interaction.deferReply({ ephemeral: true });
+
+        if (!interaction.guild) {
+            return interaction.editReply({ content: 'This action can only be performed in a server channel.', ephemeral: true });
+        }
+
+        const result = await createTicketChannel(interaction.member, interaction.guild, 'Opened via ticket panel');
+        await interaction.editReply({ embeds: [result.embed], ephemeral: true });
+    }
+});
 
 // === Keepalive Server ===
 const app = express();
 app.get('/', (req, res) => res.send('Bot is running.'));
 app.listen(3000, () => console.log('Express server listening on port 3000'));
-
