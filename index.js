@@ -1728,7 +1728,7 @@ client.on('interactionCreate', async interaction => {
         await interaction.editReply({ embeds: [result.embed], ephemeral: true });
     }
 });
-
+client.login(TOKEN);
 // === Keepalive Server ===
 const app = express();
 app.get('/', (req, res) => res.send('Bot is running.'));
