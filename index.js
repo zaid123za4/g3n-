@@ -214,37 +214,6 @@ function generateHexCode() {
 // Function to check if user is authorized
 const isAuthorized = (userId) => AUTHORIZED_USERS.includes(userId);
 
-// Reusable function to send profile embed
-async function sendProfileEmbed(channel, user) {
-    const vouches = loadVouches();
-    const data = vouches[user.id];
-    const embed = new EmbedBuilder().setColor(0x2ecc71);
-
-    if (!data) {
-        embed.setTitle('Profile Not Found ℹ️')
-             .setDescription(`${user.tag} has not received any vouches or reviews yet.`);
-        return channel.send({ embeds: [embed] });
-    }
-
-    embed.setTitle(`${user.tag}'s Vouch & Review Profile`)
-         .setThumbnail(user.displayAvatarURL())
-         .addFields(
-             { name: '✅ Positive Reviews', value: `${data.positive || 0}`, inline: true }, // Changed from data.positiveCount
-             { name: '❌ Negative Reviews', value: `${data.negative || 0}`, inline: true }, // Changed from data.negativeCount
-             { name: 'Last Reviewed On', value: `${data.lastVouched || 'N/A'}`, inline: false }
-         );
-
-    // Assuming 'reasons' is structured as before if you want to display them
-    // For simplicity, I'm adapting to the current vouch structure (positive/negative counts)
-    // If you need to display individual reasons, ensure they are stored in vouches.json
-    // and adapt this section.
-
-    embed.setFooter({ text: `User ID: ${user.id}` })
-         .setTimestamp();
-
-    return channel.send({ embeds: [embed] });
-}
-
 
 // Reusable ticket creation logic
 async function createTicketChannel(member, guild, reason = 'No reason provided') {
@@ -302,9 +271,6 @@ async function createTicketChannel(member, guild, reason = 'No reason provided')
 
         // Ping the user who created the ticket
         await ticketChannel.send(`Welcome, ${member.toString()}!`);
-
-        // Display the user's profile
-        await sendProfileEmbed(ticketChannel, member.user);
 
         // Ping the staff role
         await ticketChannel.send(`<@&${STAFF_ROLE_ID}>`);
@@ -841,7 +807,6 @@ client.on('messageCreate', async message => {
         currentVouches[id].positive += amount;
         // No need to track individual users for manual vouches unless specifically requested
         saveVouches(currentVouches);
-
         embed.setTitle('Vouches Manually Added! ✅')
              .setDescription(`Successfully added **${amount}** positive vouches for **${user.tag}**.`)
              .addFields({ name: 'Reason', value: `"${reason}"` });
@@ -873,7 +838,6 @@ client.on('messageCreate', async message => {
 
         currentVouches[id].negative += amount;
         saveVouches(currentVouches);
-
         embed.setTitle('Vouches Manually Removed! ✅')
              .setDescription(`Successfully added **${amount}** negative vouches (effectively removed) for **${user.tag}**.`)
              .addFields({ name: 'Reason', value: `"${reason}"` });
@@ -882,7 +846,28 @@ client.on('messageCreate', async message => {
 
     if (cmd === '=profile') {
         const user = message.mentions.users.first() || message.author;
-        return sendProfileEmbed(message.channel, user); // Use the reusable function
+        const vouches = loadVouches();
+        const data = vouches[user.id];
+        const profileEmbed = new EmbedBuilder().setColor(0x2ecc71);
+
+        if (!data) {
+            profileEmbed.setTitle('Profile Not Found ℹ️')
+                 .setDescription(`${user.tag} has not received any vouches or reviews yet.`);
+            return message.channel.send({ embeds: [profileEmbed] });
+        }
+
+        profileEmbed.setTitle(`${user.tag}'s Vouch & Review Profile`)
+             .setThumbnail(user.displayAvatarURL())
+             .addFields(
+                 { name: '✅ Positive Reviews', value: `${data.positive || 0}`, inline: true },
+                 { name: '❌ Negative Reviews', value: `${data.negative || 0}`, inline: true },
+                 { name: 'Last Reviewed On', value: `${data.lastVouched || 'N/A'}`, inline: false }
+             );
+
+        profileEmbed.setFooter({ text: `User ID: ${user.id}` })
+             .setTimestamp();
+
+        return message.channel.send({ embeds: [profileEmbed] });
     }
 
     if (cmd === '=addcategory') {
@@ -917,20 +902,17 @@ client.on('messageCreate', async message => {
                  .setDescription('You need `Manage Server` permission to use this command.');
             return message.channel.send({ embeds: [embed] });
         }
-
         const category = args[0]?.toLowerCase(); // Adjusted args index
         if (!category) {
             embed.setTitle('Invalid Usage ❌')
                  .setDescription('Usage: `=categoryremove <category>`');
             return message.channel.send({ embeds: [embed] });
         }
-
         if (!stock[category]) {
             embed.setTitle('Category Not Found ❌')
                  .setDescription(`The category \`${category}\` does not exist.`);
             return message.channel.send({ embeds: [embed] });
         }
-
         delete stock[category];
         delete rolesAllowed[`${category[0]}gen`]; // Remove associated role restriction
         delete channelRestrictions[`${category[0]}gen`]; // Remove associated channel restriction
@@ -940,7 +922,6 @@ client.on('messageCreate', async message => {
         }
         updateDynamicCommandMap(); // Update map after category removal
         saveData();
-
         embed.setTitle('Category Removed! ✅')
              .setDescription(`Category \`${category}\` and associated dynamic command \`=${category[0]}gen\` (and its restrictions) have been removed.`);
         return message.channel.send({ embeds: [embed] });
@@ -978,7 +959,7 @@ client.on('messageCreate', async message => {
             return message.channel.send({ embeds: [embed] });
         }
         const category = args[0]?.toLowerCase(); // Adjusted args index
-        const stockName = args.slice(1).join(' '); // Adjusted args index
+        const stockName = args.slice(1).join(' ');
         if (!category || !stockName) {
             embed.setTitle('Invalid Usage ❌')
                  .setDescription('Usage: `=removestock <category> <stock_name>`');
@@ -989,1009 +970,707 @@ client.on('messageCreate', async message => {
                  .setDescription(`Category \`${category}\` does not exist.`);
             return message.channel.send({ embeds: [embed] });
         }
-
         const initialLength = stock[category].length;
         stock[category] = stock[category].filter(item => item.toLowerCase() !== stockName.toLowerCase());
-
-        if (stock[category].length < initialLength) {
-            saveData();
-            embed.setTitle('Stock Removed! ✅')
-                 .setDescription(`Removed all instances of \`${stockName}\` from **${category}** stock.`);
-            return message.channel.send({ embeds: [embed] });
-        } else {
-            embed.setTitle('Stock Not Found ❌')
-                 .setDescription(`Stock item \`${stockName}\` not found in **${category}** category.`);
+        if (stock[category].length === initialLength) {
+            embed.setTitle('Stock Item Not Found ❌')
+                 .setDescription(`Stock item \`${stockName}\` not found in category \`${category}\`.`);
             return message.channel.send({ embeds: [embed] });
         }
-    }
-
-    if (cmd === '=add') {
-        if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
-            embed.setTitle('Permission Denied 🚫')
-                 .setDescription('You need `Manage Server` permission to use this command.');
-            return message.channel.send({ embeds: [embed] });
-        }
-        const commandToRestrict = args[0]?.toLowerCase(); // Adjusted args index
-        const role = message.mentions.roles.first();
-
-        if (!commandToRestrict || !role) {
-            embed.setTitle('Invalid Usage ❌')
-                 .setDescription('Usage: `=add <command_name_without_=> @role`');
-            return message.channel.send({ embeds: [embed] });
-        }
-
-        // Validate if it's a known command (static or dynamic)
-        if (!ALL_STATIC_COMMAND_NAMES.has(commandToRestrict) && !dynamicCommandMap.hasOwnProperty(commandToRestrict)) {
-            embed.setTitle('Invalid Command ⚠️')
-                 .setDescription(`Command \`=${commandToRestrict}\` is not a recognized command that can be restricted.`);
-            return message.channel.send({ embeds: [embed] });
-        }
-
-        rolesAllowed[commandToRestrict] = role.id;
         saveData();
-        embed.setTitle('Permission Granted! ✅')
-             .setDescription(`The role **${role.name}** can now use the command \`=${commandToRestrict}\`.`);
+        embed.setTitle('Stock Removed! ✅')
+             .setDescription(`Stock item \`${stockName}\` has been removed from the **${category}** category.`);
         return message.channel.send({ embeds: [embed] });
     }
 
-    if (cmd === '=remove') {
-        if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
-            embed.setTitle('Permission Denied 🚫')
-                 .setDescription('You need `Manage Server` permission to use this command.');
-            return message.channel.send({ embeds: [embed] });
-        }
-        const commandToRemoveRestriction = args[0]?.toLowerCase(); // Adjusted args index
-        if (!commandToRemoveRestriction) {
-            embed.setTitle('Invalid Usage ❌')
-                 .setDescription('Usage: `=remove <command_name_without_=>`');
+    if (cmd === '=stockoverview' || cmd === '=stock') {
+        const requestedCategory = commandWithoutPrefix === 'stockoverview' ? args[0]?.toLowerCase() : null; // "stockoverview" can take an arg, "stock" does not
+
+        if (requestedCategory && !stock[requestedCategory]) {
+            embed.setTitle('Category Not Found ❌')
+                 .setDescription(`Category \`${requestedCategory}\` does not exist.`);
             return message.channel.send({ embeds: [embed] });
         }
 
-        if (rolesAllowed[commandToRemoveRestriction]) {
-            delete rolesAllowed[commandToRemoveRestriction];
-            saveData();
-            embed.setTitle('Permission Removed! ✅')
-                 .setDescription(`Role restriction for command \`=${commandToRemoveRestriction}\` has been removed.`);
-            return message.channel.send({ embeds: [embed] });
+        if (requestedCategory) {
+            // Display detailed stock for a specific category
+            const items = stock[requestedCategory];
+            const itemsText = items.length > 0 ? items.map(item => `- ${item}`).join('\n') : 'No items in this category.';
+            embed.setTitle(`📦 Stock Overview: ${requestedCategory.toUpperCase()} Category`)
+                 .setDescription(itemsText)
+                 .setFooter({ text: `Total items: ${items.length}` });
         } else {
-            embed.setTitle('No Restriction Found ℹ️')
-                 .setDescription(`The command \`=${commandToRemoveRestriction}\` does not have a role restriction set.`);
-            return message.channel.send({ embeds: [embed] });
-        }
-    }
-
-    if (cmd === '=restrict') {
-        if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
-            embed.setTitle('Permission Denied 🚫')
-                 .setDescription('You need `Manage Server` permission to use this command.');
-            return message.channel.send({ embeds: [embed] });
-        }
-
-        const commandToRestrict = args[0]?.toLowerCase(); // Adjusted args index
-        const targetChannel = message.mentions.channels.first() || message.guild.channels.cache.get(args[1]); // Adjusted args index
-
-        if (!commandToRestrict || !targetChannel || targetChannel.type !== ChannelType.GuildText) {
-            embed.setTitle('Invalid Usage ❌')
-                 .setDescription('Usage: `=restrict <command_name_without_=> <#channel | channel_id>`');
-            return message.channel.send({ embeds: [embed] });
-        }
-
-        // Validate if it's a known command (static or dynamic)
-        if (!ALL_STATIC_COMMAND_NAMES.has(commandToRestrict) && !dynamicCommandMap.hasOwnProperty(commandToRestrict)) {
-            embed.setTitle('Invalid Command ⚠️')
-                 .setDescription(`Command \`=${commandToRestrict}\` is not a recognized command that can be restricted.`);
-            return message.channel.send({ embeds: [embed] });
-        }
-
-        channelRestrictions[commandToRestrict] = targetChannel.id;
-        saveData();
-        embed.setTitle('Command Restricted! ✅')
-             .setDescription(`The command \`=${commandToRestrict}\` can now only be used in <#${targetChannel.id}>.`);
-        return message.channel.send({ embeds: [embed] });
-    }
-
-    if (cmd === '=unrestrict') {
-        if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
-            embed.setTitle('Permission Denied 🚫')
-                 .setDescription('You need `Manage Server` permission to use this command.');
-            return message.channel.send({ embeds: [embed] });
-        }
-        const commandToUnrestrict = args[0]?.toLowerCase(); // Adjusted args index
-        if (!commandToUnrestrict) {
-            embed.setTitle('Invalid Usage ❌')
-                 .setDescription('Usage: `=unrestrict <command_name_without_=>`');
-            return message.channel.send({ embeds: [embed] });
-        }
-
-        if (channelRestrictions[commandToUnrestrict]) {
-            delete channelRestrictions[commandToUnrestrict];
-            saveData();
-            embed.setTitle('Command Unrestricted! ✅')
-                 .setDescription(`Channel restriction for command \`=${commandToUnrestrict}\` has been removed.`);
-            return message.channel.send({ embeds: [embed] });
-        } else {
-            embed.setTitle('No Channel Restriction Found ℹ️')
-                 .setDescription(`The command \`=${commandToUnrestrict}\` does not have a channel restriction set.`);
-            return message.channel.send({ embeds: [embed] });
-        }
-    }
-
-    if (cmd === '=cool') {
-        if (!isAuthorized(message.author.id)) {
-            embed.setTitle('Authorization Required 🚫')
-                 .setDescription('You need to be an authorized user to use this command.');
-            return message.channel.send({ embeds: [embed] });
-        }
-
-        const commandToCool = args[0]?.toLowerCase(); // Adjusted args index
-        const cooldownTimeSeconds = parseInt(args[1]); // Adjusted args index
-
-        if (!commandToCool || isNaN(cooldownTimeSeconds) || cooldownTimeSeconds < 0) {
-            embed.setTitle('Invalid Usage ❌')
-                 .setDescription('Usage: `=cool <command_name_without_=> <cooldown_in_seconds>` (use 0 to remove cooldown)');
-            return message.channel.send({ embeds: [embed] });
-        }
-
-        if (!ALL_STATIC_COMMAND_NAMES.has(commandToCool) && !dynamicCommandMap.hasOwnProperty(commandToCool)) {
-            embed.setTitle('Invalid Command ⚠️')
-                 .setDescription(`Command \`=${commandToCool}\` is not a recognized command.`);
-            return message.channel.send({ embeds: [embed] });
-        }
-
-        if (cooldownTimeSeconds === 0) {
-            if (cooldowns[commandToCool]) {
-                delete cooldowns[commandToCool];
-                saveCooldowns(cooldowns);
-                embed.setTitle('Cooldown Removed! ✅')
-                     .setDescription(`Cooldown for \`=${commandToCool}\` has been removed.`);
+            // Display all categories and their item counts (for =stockoverview or =stock)
+            const categories = Object.keys(stock);
+            if (categories.length === 0) {
+                embed.setTitle('📦 Stock Overview')
+                     .setDescription('No stock categories have been created yet.');
             } else {
-                embed.setTitle('No Cooldown Set ℹ️')
-                     .setDescription(`\`=${commandToCool}\` does not have a cooldown set.`);
+                embed.setTitle('📦 All Stock Categories')
+                     .setDescription('Here is an overview of all current stock categories and their item counts:')
+                     .addFields(
+                         categories.map(category => ({
+                             name: `• ${category.toUpperCase()}`,
+                             value: `Items: ${stock[category].length}`,
+                             inline: true
+                         }))
+                     );
             }
-        } else {
-            cooldowns[commandToCool] = {
-                duration: cooldownTimeSeconds,
-                lastUsed: cooldowns[commandToCool]?.lastUsed || {}
-            };
-            saveCooldowns(cooldowns);
-            embed.setTitle('Cooldown Set! ✅')
-                 .setDescription(`\`=${commandToCool}\` now has a cooldown of **${cooldownTimeSeconds}** seconds.`);
         }
         return message.channel.send({ embeds: [embed] });
     }
-
-
-    // --- SWAPPED COMMANDS: =stock and =stockoverview ---
-    // The old =stockall is now =stock
-    if (cmd === '=stock') { // This was previously =stockall
-        const allCategories = Object.keys(stock);
-        if (allCategories.length === 0) {
-            embed.setTitle('No Stock 📦')
-                 .setDescription('There are no stock categories to display.')
-                 .setColor(0x0099ff);
-            return message.channel.send({ embeds: [embed] });
-        }
-
-        const replyEmbeds = [];
-        let currentEmbed = new EmbedBuilder()
-            .setTitle('📦 All Stock Details')
-            .setColor(0x0099ff);
-        let fieldCounter = 0;
-
-        const sortedCategories = allCategories.sort();
-
-        for (const cat of sortedCategories) {
-            const items = stock[cat];
-            const content = items.length > 0 ? items.map(item => `\`${item}\``).join(', ') : '*Empty*';
-
-            if (content.length > 1000) {
-                const parts = content.match(/[\s\S]{1,1000}/g) || [];
-                for (let i = 0; i < parts.length; i++) {
-                    currentEmbed.addFields({
-                        name: i === 0 ? `${cat.toUpperCase()} (${items.length} items)` : '\u200b',
-                        value: parts[i],
-                        inline: false
-                    });
-                    fieldCounter++;
-                    if (fieldCounter >= 24) {
-                        replyEmbeds.push(currentEmbed);
-                        currentEmbed = new EmbedBuilder()
-                            .setTitle('📦 All Stock Details (Continued)')
-                            .setColor(0x0099ff);
-                        fieldCounter = 0;
-                    }
-                }
-            } else {
-                 currentEmbed.addFields({
-                    name: `${cat.toUpperCase()} (${items.length} items)`,
-                    value: content,
-                    inline: false
-                });
-                fieldCounter++;
-                if (fieldCounter >= 24) {
-                    replyEmbeds.push(currentEmbed);
-                    currentEmbed = new EmbedBuilder()
-                        .setTitle('📦 All Stock Details (Continued)')
-                        .setColor(0x0099ff);
-                    fieldCounter = 0;
-                }
-            }
-        }
-        replyEmbeds.push(currentEmbed);
-
-        for (const finalEmbed of replyEmbeds) {
-            await message.channel.send({ embeds: [finalEmbed] });
-        }
-        return;
-    }
-
-    // The old =stock is now =stockoverview
-    if (cmd === '=stockoverview') { // This was previously =stock
-        const allCategories = Object.keys(stock);
-        if (allCategories.length === 0) {
-            embed.setTitle('No Stock 📦')
-                 .setDescription('No stock categories have been added yet.')
-                 .setColor(0x0099ff);
-            return message.channel.send({ embeds: [embed] });
-        }
-
-        const cat = args[0]?.toLowerCase(); // Adjusted args index
-        if (cat) {
-            if (stock[cat]) {
-                const categoryItems = stock[cat];
-                embed.setTitle(`📦 Stock for **${cat.toUpperCase()}** (${categoryItems.length} items)`)
-                     .setDescription(categoryItems.length > 0 ? categoryItems.map(item => `\`${item}\``).join(', ') : 'This category is empty.')
-                     .setColor(0x0099ff);
-                return message.channel.send({ embeds: [embed] });
-            } else {
-                embed.setTitle('Category Not Found ❌')
-                     .setDescription(`The category \`${cat}\` does not exist.`)
-                     .setColor(0xe74c3c);
-                return message.channel.send({ embeds: [embed] });
-            }
-        }
-
-        const replyEmbed = new EmbedBuilder()
-            .setTitle('📦 Current Stock Overview')
-            .setColor(0x2c3e50);
-
-        const sortedCategories = allCategories.sort();
-
-        for (const category of sortedCategories) {
-            const items = stock[category];
-            const stockCount = items.length;
-            const fieldValue = stockCount > 0 ? `**${stockCount}** items` : '*Empty*';
-            replyEmbed.addFields({ name: category.toUpperCase(), value: fieldValue, inline: true });
-        }
-
-        return message.channel.send({ embeds: [replyEmbed] });
-    }
-    // --- END SWAPPED COMMANDS ---
-
 
     if (cmd === '=cstock') {
-        updateFileStock();
-        embed.setTitle('🍪 Cookie Stock Overview')
-             .setColor(0xf1c40f);
-
+        updateFileStock(); // Ensure fileStock is up-to-date
         const cookieCategories = Object.keys(fileStock);
         if (cookieCategories.length === 0) {
-            embed.setDescription('No cookie categories found. Upload a ZIP file to create one!');
-            return message.channel.send({ embeds: [embed] });
-        }
-
-        const sortedCookieCategories = cookieCategories.sort();
-
-        for (const category of sortedCookieCategories) {
-            const fileCount = fileStock[category].length;
-            embed.addFields({ name: category.toUpperCase(), value: `${fileCount} files`, inline: true });
+            embed.setTitle('🍪 Cookie/File Stock Overview')
+                 .setDescription('No cookie/file categories found. Use `=upload <category_name>` to add some.');
+        } else {
+            embed.setTitle('🍪 Cookie/File Stock Overview')
+                 .setDescription('Here is an overview of available cookie/file categories:')
+                 .addFields(
+                     cookieCategories.map(category => ({
+                         name: `• ${category.toUpperCase()}`,
+                         value: `Files: ${fileStock[category].length}`,
+                         inline: true
+                     }))
+                 );
         }
         return message.channel.send({ embeds: [embed] });
     }
 
     if (cmd === '=upload') {
         if (!isAuthorized(message.author.id)) {
-            embed.setTitle('Authorization Required 🚫')
-                 .setDescription('You need to be an authorized user to use this command.');
+            embed.setTitle('Permission Denied 🚫')
+                 .setDescription('You are not authorized to use this command.');
             return message.channel.send({ embeds: [embed] });
         }
+        const category = args[0]?.toLowerCase();
+        const attachment = message.attachments.first();
 
-        const category = args[0]?.toLowerCase(); // Adjusted args index
         if (!category) {
             embed.setTitle('Invalid Usage ❌')
-                 .setDescription('Usage: `=upload <cookie_category>` with a ZIP file.');
+                 .setDescription('Please provide a category name. Usage: `=upload <category> (attach ZIP file)`');
+            return message.channel.send({ embeds: [embed] });
+        }
+        if (!attachment || !attachment.name.endsWith('.zip')) {
+            embed.setTitle('Invalid Attachment ❌')
+                 .setDescription('Please attach a ZIP file containing the cookies/files.');
             return message.channel.send({ embeds: [embed] });
         }
 
-        if (!message.attachments.size) {
-            embed.setTitle('Missing Attachment ❌')
-                 .setDescription('Please attach a ZIP file to upload.');
-            return message.channel.send({ embeds: [embed] });
+        const categoryPath = path.join(COOKIE_DIR, category);
+        if (!fs.existsSync(categoryPath)) {
+            fs.mkdirSync(categoryPath);
         }
 
-        const attachment = message.attachments.first();
-        if (!attachment.name.endsWith('.zip')) {
-            embed.setTitle('Invalid File Type ❌')
-                 .setDescription('Only ZIP files are allowed.');
-            return message.channel.send({ embeds: [embed] });
-        }
-
-        const zipPath = path.join('./', `upload_${Date.now()}.zip`);
-        embed.setTitle('Processing Upload... ⏳')
-             .setDescription(`Uploading ZIP to \`${category}\`...`)
-             .setColor(0x9b59b6);
-        const statusMsg = await message.channel.send({ embeds: [embed] });
+        const zipFilePath = path.join(categoryPath, attachment.name);
 
         try {
-            const res = await fetch(attachment.url);
-            const buffer = await res.buffer();
-            fs.writeFileSync(zipPath, buffer);
+            const response = await fetch(attachment.url);
+            const arrayBuffer = await response.arrayBuffer();
+            const buffer = Buffer.from(arrayBuffer);
+            fs.writeFileSync(zipFilePath, buffer);
 
-            const zip = new AdmZip(zipPath);
-            const extractPath = path.join(COOKIE_DIR, category);
-            if (!fs.existsSync(extractPath)) fs.mkdirSync(extractPath, { recursive: true });
+            const zip = new AdmZip(zipFilePath);
+            zip.extractAllTo(categoryPath, true); // Overwrite existing files
 
-            for (const zipEntry of zip.getEntries()) {
-                if (!zipEntry.isDirectory) {
-                    zip.extractEntryTo(zipEntry.entryName, extractPath, false, true);
-                }
-            }
-            fs.unlinkSync(zipPath);
+            fs.unlinkSync(zipFilePath); // Delete the zip file after extraction
 
-            updateFileStock();
+            updateFileStock(); // Update the in-memory file stock
 
             embed.setTitle('Upload Successful! ✅')
-                 .setDescription(`Files uploaded to \`${category}\`. Reflected in \`=cstock\`.`);
-            return statusMsg.edit({ embeds: [embed] });
-        } catch (err) {
-            console.error('Upload error:', err);
-            if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
+                 .setDescription(`Successfully uploaded and extracted files to the **${category}** category.`)
+                 .addFields({ name: 'Files Added', value: `${fileStock[category] ? fileStock[category].length : 0} total files in this category.` });
+            return message.channel.send({ embeds: [embed] });
+
+        } catch (error) {
+            console.error('Error uploading/extracting zip:', error);
             embed.setTitle('Upload Failed ❌')
-                 .setDescription(`An error occurred while processing your ZIP: \`${err.message}\``)
-                 .setColor(0xe74c3c);
-            return statusMsg.edit({ embeds: [embed] });
+                 .setDescription(`An error occurred during upload or extraction: \`${error.message}\`. Ensure it's a valid ZIP file.`);
+            return message.channel.send({ embeds: [embed] });
         }
     }
 
     if (cmd === '=cremove') {
-        if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
+        if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild) && !isAuthorized(message.author.id)) {
             embed.setTitle('Permission Denied 🚫')
-                 .setDescription('You need `Manage Server` permission to use this command.');
+                 .setDescription('You need `Manage Server` permission or be an authorized user to use this command.');
             return message.channel.send({ embeds: [embed] });
         }
-
-        const category = args[0]?.toLowerCase(); // Adjusted args index
-
+        const category = args[0]?.toLowerCase();
         if (!category) {
             embed.setTitle('Invalid Usage ❌')
-                 .setDescription('Usage: `=cremove <cookie_category>` to remove all files in a category and get them in a ZIP.');
+                 .setDescription('Usage: `=cremove <cookie_category>`');
             return message.channel.send({ embeds: [embed] });
         }
 
         const categoryPath = path.join(COOKIE_DIR, category);
         if (!fs.existsSync(categoryPath)) {
             embed.setTitle('Category Not Found ❌')
-                 .setDescription(`Cookie category \`${category}\` does not exist.`);
-            return message.channel.send({ embeds: [embed] });
-        }
-
-        const filesInCategories = fs.readdirSync(categoryPath);
-        if (filesInCategories.length === 0) {
-            embed.setTitle('Category Empty ℹ️')
-                 .setDescription(`Category \`${category}\` is already empty. Removing directory.`);
-            fs.rmdirSync(categoryPath);
-            updateFileStock();
+                 .setDescription(`Cookie/file category \`${category}\` does not exist.`);
             return message.channel.send({ embeds: [embed] });
         }
 
         try {
+            // Create a zip of the category contents
             const zip = new AdmZip();
-            const zipFileName = `${category}_cookies_${Date.now()}.zip`;
-            const tempZipPath = path.join('./', zipFileName);
+            const files = fs.readdirSync(categoryPath);
+            if (files.length > 0) {
+                files.forEach(file => {
+                    zip.addLocalFile(path.join(categoryPath, file));
+                });
+                const outputZipPath = path.join(__dirname, `${category}_backup_${Date.now()}.zip`);
+                zip.writeZip(outputZipPath);
 
-            filesInCategories.forEach(file => {
-                const filePath = path.join(categoryPath, file);
-                zip.addLocalFile(filePath, category);
-            });
+                // Send the zip file to the user's DMs
+                const attachment = new AttachmentBuilder(outputZipPath, { name: `${category}_backup.zip` });
+                await message.author.send({
+                    content: `Here is the backup of the \`${category}\` cookie/file category before deletion:`,
+                    files: [attachment]
+                });
+                fs.unlinkSync(outputZipPath); // Delete the temp zip file
+            } else {
+                await message.author.send(`The \`${category}\` cookie/file category was empty, so no backup was sent.`);
+            }
 
-            zip.writeZip(tempZipPath);
-
-            const attachment = new AttachmentBuilder(tempZipPath, { name: zipFileName });
-            await message.author.send({
-                content: `Here are all the cookie files from the removed category \`${category}\`:`,
-                files: [attachment]
-            });
-
+            // Delete the directory and its contents
             fs.rmSync(categoryPath, { recursive: true, force: true });
-            fs.unlinkSync(tempZipPath);
+            updateFileStock(); // Update in-memory stock
 
-            updateFileStock();
-
-            embed.setTitle('Category Removed and Sent! ✅')
-                 .setDescription(`All files from category \`${category}\` have been removed and sent to your DMs in a ZIP file.`);
+            embed.setTitle('Category Removed! ✅')
+                 .setDescription(`Cookie/file category \`${category}\` has been removed. Its contents were sent to your DMs (if any).`);
             return message.channel.send({ embeds: [embed] });
 
         } catch (error) {
-            console.error('Error removing or sending cookie category:', error);
-            embed.setTitle('Error ❌')
-                 .setDescription(`An error occurred: \`${error.message}\`. Please check console for details or ensure your DMs are open.`);
+            console.error('Error removing cookie category or sending backup:', error);
+            embed.setTitle('Error Removing Category ❌')
+                 .setDescription(`An error occurred: \`${error.message}\`. Check console for details.`);
             return message.channel.send({ embeds: [embed] });
         }
     }
 
-
     if (cmd === '=csend') {
-        // Role permission check for =csend
-        if (!message.member.roles.cache.has(STAFF_ROLE_ID)) {
+        const category = args[0]?.toLowerCase();
+        const targetUser = message.mentions.users.first();
+
+        if (!message.member.roles.cache.has(STAFF_ROLE_ID) && !isAuthorized(message.author.id)) {
             embed.setTitle('Permission Denied 🚫')
-                 .setDescription(`You need the role <@&${STAFF_ROLE_ID}> to use this command.`);
+                 .setDescription('You need the Staff Role or be an authorized user to use this command.');
             return message.channel.send({ embeds: [embed] });
         }
 
-        const category = args[0]?.toLowerCase(); // Adjusted args index
-        const user = message.mentions.users.first();
-        if (!category || !user) {
+        if (!category || !targetUser) {
             embed.setTitle('Invalid Usage ❌')
                  .setDescription('Usage: `=csend <cookie_category> @user`');
             return message.channel.send({ embeds: [embed] });
         }
 
-        const categoryPath = path.join(COOKIE_DIR, category);
-        if (!fs.existsSync(categoryPath) || fs.readdirSync(categoryPath).length === 0) {
-            embed.setTitle('No Files ❌')
-                 .setDescription(`No files found in category \`${category}\`.`);
+        updateFileStock(); // Ensure fileStock is current
+
+        if (!fileStock[category] || fileStock[category].length === 0) {
+            embed.setTitle('Stock Empty ❌')
+                 .setDescription(`The cookie/file category \`${category}\` is empty or does not exist.`);
             return message.channel.send({ embeds: [embed] });
         }
 
-        const files = fs.readdirSync(categoryPath);
-        const fileToSend = files[0];
-        const filePath = path.join(categoryPath, fileToSend);
+        const filePath = path.join(COOKIE_DIR, category, fileStock[category][0]);
+        if (!fs.existsSync(filePath)) {
+            embed.setTitle('File Not Found ❌')
+                 .setDescription(`The first file in category \`${category}\` was not found on disk. It might have been moved or deleted manually.`);
+            return message.channel.send({ embeds: [embed] });
+        }
 
         try {
             const attachment = new AttachmentBuilder(filePath);
-            await user.send({
-                content: `Here is a cookie file from \`${category}\` sent by ${message.author.tag}:`,
+            await targetUser.send({
+                content: `Here is a file from the \`${category}\` category you requested:`,
                 files: [attachment]
             });
 
+            // Remove the sent file from disk and update stock
             fs.unlinkSync(filePath);
-            if (fs.readdirSync(categoryPath).length === 0) {
-                fs.rmdirSync(categoryPath);
-            }
             updateFileStock();
 
-            embed.setTitle('Cookie Sent! ✅')
-                 .setDescription(`\`${fileToSend}\` has been sent to ${user.tag} and removed from storage.`);
+            embed.setTitle('File Sent! ✅')
+                 .setDescription(`Successfully sent a file from \`${category}\` to ${targetUser.tag}'s DMs.`)
+                 .addFields({ name: 'Remaining in Category', value: `${fileStock[category] ? fileStock[category].length : 0} files.` });
             return message.channel.send({ embeds: [embed] });
+
         } catch (error) {
-            console.error('Error sending file:', error);
-            embed.setTitle('Error Sending File ❌')
-                 .setDescription(`An error occurred while sending the cookie file for **${user.tag}**. Please ensure their DMs are open.`);
+            console.error(`Error sending cookie/file to ${targetUser.tag}:`, error);
+            embed.setTitle('Send Failed ❌')
+                 .setDescription(`Could not send the file to ${targetUser.tag}. They might have DMs disabled or an internal error occurred: \`${error.message}\`.`);
             return message.channel.send({ embeds: [embed] });
         }
     }
 
     if (cmd === '=redeem') {
-        if (!message.member.roles.cache.has(STAFF_ROLE_ID)) { // Changed to STAFF_ROLE_ID
-            embed.setTitle('Permission Denied 🚫')
-                 .setDescription(`You need the role <@&${STAFF_ROLE_ID}> to use this command.`);
-            return message.channel.send({ embeds: [embed] });
-        }
-
-        const code = args[0]?.toUpperCase(); // Adjusted args index
-        if (!code) {
+        const hexCode = args[0]?.toUpperCase();
+        if (!hexCode) {
             embed.setTitle('Invalid Usage ❌')
                  .setDescription('Usage: `=redeem <hex_code>`');
             return message.channel.send({ embeds: [embed] });
         }
 
-        if (generatedCodes[code]) {
-            const codeData = generatedCodes[code];
-            if (codeData.redeemed) {
-                embed.setTitle('Code Already Redeemed ⚠️')
-                     .setDescription(`The code \`${code}\` has already been redeemed.`);
-                return message.channel.send({ embeds: [embed] });
-            }
-            codeData.redeemed = true;
-
-            embed.setTitle('Code Redeemed! ✅')
-                 .setDescription(`You have successfully redeemed code: \`${code}\`\n\nThis code was generated for a **${codeData.category.toUpperCase()}** item: \`${codeData.stockName}\`.`)
-                 .addFields(
-                     { name: 'Generated By', value: `<@${codeData.generatedBy}>`, inline: true },
-                     { name: 'Generated On', value: new Date(codeData.timestamp).toLocaleString(), inline: true }
-                 )
-                 .setFooter({ text: 'This code is now invalid.' });
-            return message.channel.send({ embeds: [embed] });
-        } else {
-            embed.setTitle('Invalid Code ❌')
-                 .setDescription('The provided code is either invalid or has expired. Only hex codes generated by `=*gen` commands can be redeemed.');
+        const codeData = generatedCodes[hexCode];
+        if (!codeData) {
+            embed.setTitle('Code Not Found ❌')
+                 .setDescription('The provided hex code is invalid or has expired.');
             return message.channel.send({ embeds: [embed] });
         }
-    }
 
-    if (cmd === '=pls') {
-        plsRequests[message.author.id] = { timestamp: Date.now(), vouchUsed: false };
+        if (codeData.redeemed) {
+            embed.setTitle('Code Already Redeemed ⚠️')
+                 .setDescription(`This code has already been redeemed by <@${codeData.redeemedBy}> on ${new Date(codeData.redeemedAt).toLocaleString()}.`);
+            return message.channel.send({ embeds: [embed] });
+        }
 
-        embed.setTitle('Cheers for our staff! 🎉')
-             .setDescription(`Show appreciation with \`+vouch @user\` in <#${VOUCH_CHANNEL_ID}>.\nNot happy? Use \`-vouch @user <reason>\`.\n\n**You are now eligible to receive ONE vouch/review.**`);
+        // Only staff can redeem the codes to view full info.
+        if (!message.member.roles.cache.has(STAFF_ROLE_ID) && !isAuthorized(message.author.id)) {
+            embed.setTitle('Permission Denied 🚫')
+                 .setDescription('Only staff can redeem codes to view full details.');
+            return message.channel.send({ embeds: [embed] });
+        }
+
+
+        // Mark as redeemed and store who redeemed it and when
+        codeData.redeemed = true;
+        codeData.redeemedBy = message.author.id;
+        codeData.redeemedAt = new Date().toISOString();
+
+        embed.setTitle('Code Redeemed Successfully! ✅')
+             .setDescription(`Hex Code: \`${hexCode}\``)
+             .addFields(
+                 { name: 'Category', value: codeData.category, inline: true },
+                 { name: 'Item', value: codeData.stockName, inline: true },
+                 { name: 'Generated By', value: `<@${codeData.generatedBy}>`, inline: true },
+                 { name: 'Generated At', value: new Date(codeData.timestamp).toLocaleString(), inline: false },
+                 { name: 'Redeemed By', value: `<@${codeData.redeemedBy}>`, inline: true },
+                 { name: 'Redeemed At', value: new Date(codeData.redeemedAt).toLocaleString(), inline: true }
+             )
+             .setColor(0x2ecc71); // Green for successful redemption
+
         return message.channel.send({ embeds: [embed] });
     }
 
+    if (cmd === '=pls') {
+        if (message.channel.type === ChannelType.DM) {
+            embed.setTitle('Command Restricted 🚫')
+                 .setDescription('This command can only be used in a server channel.');
+            return message.channel.send({ embeds: [embed] });
+        }
+
+        const userId = message.author.id;
+        const now = Date.now();
+        const oneHour = 60 * 60 * 1000; // 1 hour in milliseconds
+
+        if (plsRequests[userId] && (now - plsRequests[userId].timestamp < oneHour) && !plsRequests[userId].vouchUsed) {
+            embed.setTitle('Request on Cooldown ⏳')
+                 .setDescription('You can only make one `pls` request per hour, unless you have received a vouch from your previous request. Please wait or receive a vouch to use again.')
+                 .setColor(0xffa500);
+            return message.channel.send({ embeds: [embed] });
+        }
+
+        plsRequests[userId] = {
+            timestamp: now,
+            vouchUsed: false // Reset for new request
+        };
+
+        embed.setTitle('PLS Request Received! 🙏')
+             .setDescription(`${message.author.tag} is asking for a vouch! If you've had a good interaction, please consider giving them a +vouch!\n\nThis user is now eligible to receive one vouch/review.`)
+             .setColor(0xffd700); // Gold color
+        message.channel.send({ embeds: [embed] });
+        return message.delete(); // Delete the =pls message
+    }
+
+
     if (cmd === '=backup') {
         if (!isAuthorized(message.author.id)) {
-            embed.setTitle('Authorization Required 🚫')
-                 .setDescription('You need to be an authorized user to use this command.');
+            embed.setTitle('Permission Denied 🚫')
+                 .setDescription('You are not authorized to use this command.');
             return message.channel.send({ embeds: [embed] });
         }
 
         try {
-            const vouchesAttachment = new AttachmentBuilder(VOUCH_PATH, { name: 'vouches.json' });
-            const stockAttachment = new AttachmentBuilder(STOCK_PATH, { name: 'stock.json' });
-            const rolesAttachment = new AttachmentBuilder(ROLES_PATH, { name: 'roles.json' });
-            const redeemedAttachment = new AttachmentBuilder(REDEEMED_PATH, { name: 'redeemed.json' });
-            const channelRestrictionsAttachment = new AttachmentBuilder(CHANNEL_RESTRICTIONS_PATH, { name: 'channelRestrictions.json' });
-            const cooldownsAttachment = new AttachmentBuilder(COOLDOWN_PATH, { name: 'cooldowns.json' });
-            const ticketsAttachment = new AttachmentBuilder(TICKETS_DATA_PATH, { name: 'tickets.json' });
+            const zip = new AdmZip();
+            const filesToBackup = [VOUCH_PATH, STOCK_PATH, ROLES_PATH, REDEEMED_PATH, CHANNEL_RESTRICTIONS_PATH, COOLDOWN_PATH, TICKETS_DATA_PATH];
 
-            await message.author.send({
-                content: 'Here are your backup files:',
-                files: [vouchesAttachment, stockAttachment, rolesAttachment, redeemedAttachment, channelRestrictionsAttachment, cooldownsAttachment, ticketsAttachment]
+            filesToBackup.forEach(filePath => {
+                if (fs.existsSync(filePath)) {
+                    zip.addLocalFile(filePath, path.dirname(filePath) === '.' ? '' : path.dirname(filePath)); // Add to root of zip if no dir, else maintain path
+                }
             });
+
+            // Create a temporary zip file
+            const backupZipPath = path.join(__dirname, `bot_data_backup_${Date.now()}.zip`);
+            zip.writeZip(backupZipPath);
+
+            const attachment = new AttachmentBuilder(backupZipPath, { name: 'bot_data_backup.zip' });
+            await message.author.send({
+                content: 'Here is your bot data backup:',
+                files: [attachment]
+            });
+            fs.unlinkSync(backupZipPath); // Delete the temp zip file
+
             embed.setTitle('Backup Sent! ✅')
-                 .setDescription('Your bot data files have been sent to your DMs (`vouches.json`, `stock.json`, `roles.json`, `redeemed.json`, `channelRestrictions.json`, `cooldowns.json`, `tickets.json`).');
+                 .setDescription('All bot data files have been sent to your DMs.');
             return message.channel.send({ embeds: [embed] });
-        } catch (dmError) {
-            console.error(`Could not DM user ${message.author.tag} for backup:`, dmError);
+
+        } catch (error) {
+            console.error('Error creating or sending backup:', error);
             embed.setTitle('Backup Failed ❌')
-                 .setDescription('Could not send backup files to your DMs. Please ensure your DMs are open.');
+                 .setDescription(`An error occurred during backup: \`${error.message}\`. Check console for details.`);
             return message.channel.send({ embeds: [embed] });
         }
     }
 
     if (cmd === '=timesaved') {
         if (!isAuthorized(message.author.id)) {
-            embed.setTitle('Authorization Required 🚫')
-                 .setDescription('You need to be an authorized user to use this command.');
+            embed.setTitle('Permission Denied 🚫')
+                 .setDescription('You are not authorized to use this command.');
             return message.channel.send({ embeds: [embed] });
         }
 
-        const attachments = message.attachments;
-        if (attachments.size === 0) {
-            embed.setTitle('Invalid Usage ❌')
-                 .setDescription('Please attach one or more JSON files to restore data. Accepted files: `vouches.json`, `stock.json`, `roles.json`, `redeemed.json`, `channelRestrictions.json`, `cooldowns.json`, `tickets.json`.');
+        const attachment = message.attachments.first();
+        if (!attachment || !attachment.name.endsWith('.zip')) {
+            embed.setTitle('Invalid Attachment ❌')
+                 .setDescription('Please attach the `bot_data_backup.zip` file.');
             return message.channel.send({ embeds: [embed] });
         }
 
-        const allowedFileNames = [
-            'vouches.json', 'stock.json', 'roles.json',
-            'redeemed.json', 'channelRestrictions.json', 'cooldowns.json', 'tickets.json'
-        ];
-        let restoredFiles = [];
-        let errorMessages = [];
+        const restoreZipPath = path.join(__dirname, attachment.name);
+        try {
+            const response = await fetch(attachment.url);
+            const arrayBuffer = await response.arrayBuffer();
+            const buffer = Buffer.from(arrayBuffer);
+            fs.writeFileSync(restoreZipPath, buffer);
 
-        for (const attachment of attachments.values()) {
-            if (!attachment.name.endsWith('.json') || !allowedFileNames.includes(attachment.name)) {
-                errorMessages.push(`Skipping invalid file: \`${attachment.name}\`. Only allowed JSON files can be restored.`);
-                continue;
-            }
-            if (attachment.size > 1024 * 1024 * 5) {
-                errorMessages.push(`Skipping \`${attachment.name}\` - file too large (Max 5MB).`);
-                continue;
-            }
+            const zip = new AdmZip(restoreZipPath);
+            zip.extractAllTo(__dirname, true); // Extract to current directory, overwriting existing
 
-            try {
-                const response = await fetch(attachment.url);
-                const text = await response.text();
-                const newData = JSON.parse(text);
+            fs.unlinkSync(restoreZipPath); // Delete the zip file after extraction
 
-                if (typeof newData !== 'object' || newData === null) {
-                    throw new Error('Invalid JSON structure. Expected an object.');
-                }
+            loadData(); // Reload all data after restoration
+            updateFileStock(); // Rescan cookie directories
+            updateDynamicCommandMap(); // Rebuild dynamic commands
 
-                switch (attachment.name) {
-                    case 'vouches.json':
-                        vouches = newData;
-                        saveVouches(newData);
-                        break;
-                    case 'stock.json':
-                        stock = newData;
-                        saveJSON(STOCK_PATH, stock);
-                        updateDynamicCommandMap();
-                        break;
-                    case 'roles.json':
-                        rolesAllowed = newData;
-                        saveJSON(ROLES_PATH, rolesAllowed);
-                        break;
-                    case 'redeemed.json':
-                        redeemed = newData;
-                        saveJSON(REDEEMED_PATH, redeemed);
-                        break;
-                    case 'channelRestrictions.json':
-                        channelRestrictions = newData;
-                        saveJSON(CHANNEL_RESTRICTIONS_PATH, channelRestrictions);
-                        break;
-                    case 'cooldowns.json':
-                        cooldowns = newData;
-                        saveJSON(COOLDOWN_PATH, cooldowns);
-                        break;
-                    case 'tickets.json':
-                        activeTickets = newData.activeTickets || {};
-                        ticketPanelInfo = newData.ticketPanelInfo || { channelId: null, messageId: null };
-                        saveTicketsData();
-                        break;
-                }
-                restoredFiles.push(attachment.name);
-            } catch (error) {
-                errorMessages.push(`Failed to restore \`${attachment.name}\`: \`${error.message}\`.`);
-                console.error(`Error restoring ${attachment.name}:`, error);
-            }
+            embed.setTitle('Restore Successful! ✅')
+                 .setDescription('Bot data has been successfully restored from the provided backup.');
+            return message.channel.send({ embeds: [embed] });
+
+        } catch (error) {
+            console.error('Error restoring data:', error);
+            embed.setTitle('Restore Failed ❌')
+                 .setDescription(`An error occurred during data restoration: \`${error.message}\`. Ensure the zip file is valid and bot has write permissions.`);
+            return message.channel.send({ embeds: [embed] });
         }
-
-        if (restoredFiles.length > 0) {
-            embed.setTitle('Data Restoration Complete! ✅')
-                 .setDescription(`Successfully restored: ${restoredFiles.map(f => `\`${f}\``).join(', ')}.`);
-        } else {
-            embed.setTitle('Data Restoration Failed ❌')
-                 .setDescription('No valid files were restored. Ensure correct file names and valid JSON format.\nU noob.');
-        }
-        if (errorMessages.length > 0) {
-            embed.addFields({ name: 'Errors', value: errorMessages.join('\n'), inline: false });
-        }
-        return message.channel.send({ embeds: [embed] });
     }
 
     if (cmd === '=debug') {
         if (!isAuthorized(message.author.id)) {
-            embed.setTitle('Authorization Required 🚫')
-                 .setDescription('You need to be an authorized user to use this command.');
+            embed.setTitle('Permission Denied 🚫')
+                 .setDescription('You are not authorized to use this command.');
             return message.channel.send({ embeds: [embed] });
         }
-        const debugEmbed = new EmbedBuilder()
-            .setTitle('Bot Debug Information')
-            .setColor(0x8e44ad)
-            .setDescription('Current internal state of the bot data. (Truncated for Discord character limits)');
 
-        const rolesAllowedStr = JSON.stringify(rolesAllowed, null, 2);
-        const stockStr = JSON.stringify(stock, null, 2);
-        const redeemedStr = JSON.stringify(redeemed, null, 2);
-        const generatedCodesStr = JSON.stringify(generatedCodes, null, 2);
-        const fileStockStr = JSON.stringify(fileStock, null, 2);
-        const channelRestrictionsStr = JSON.stringify(channelRestrictions, null, 2);
-        const plsRequestsStr = JSON.stringify(plsRequests, null, 2);
-        const cooldownsStr = JSON.stringify(cooldowns, null, 2);
-        const activeTicketsStr = JSON.stringify(activeTickets, null, 2);
-        const ticketPanelInfoStr = JSON.stringify(ticketPanelInfo, null, 2);
-
-        const splitStringForEmbed = (str, fieldName) => {
-            const maxLen = 1000;
-            const parts = [];
-            for (let i = 0; i < str.length; i += maxLen) {
-                parts.push(str.substring(i, Math.min(i + maxLen, str.length)));
-            }
-            return parts.map((part, index) => ({
-                name: index === 0 ? fieldName : '\u200b',
-                value: `\`\`\`json\n${part}\n\`\`\``,
-                inline: false
-            }));
+        // Prepare debug information
+        const debugInfo = {
+            stock: stock,
+            redeemed: redeemed,
+            rolesAllowed: rolesAllowed,
+            channelRestrictions: channelRestrictions,
+            cooldowns: cooldowns,
+            activeTickets: activeTickets,
+            ticketPanelInfo: ticketPanelInfo,
+            generatedCodes: Object.keys(generatedCodes).length, // Only count to avoid large output
+            plsRequests: Object.keys(plsRequests).length, // Only count
+            dynamicCommandMap: dynamicCommandMap,
+            fileStock: fileStock,
+            uptime: process.uptime(), // Bot uptime in seconds
+            memoryUsage: process.memoryUsage() // Node.js memory usage
         };
 
-        debugEmbed.addFields(...splitStringForEmbed(rolesAllowedStr, 'Roles Allowed'));
-        debugEmbed.addFields(...splitStringForEmbed(stockStr, 'Stock Data'));
-        debugEmbed.addFields(...splitStringForEmbed(redeemedStr, 'Manually Redeemed'));
-        debugEmbed.addFields(...splitStringForEmbed(generatedCodesStr, 'Generated Codes (in-memory)'));
-        debugEmbed.addFields(...splitStringForEmbed(fileStockStr, 'File Stock'));
-        debugEmbed.addFields(...splitStringForEmbed(channelRestrictionsStr, 'Channel Restrictions'));
-        debugEmbed.addFields(...splitStringForEmbed(plsRequestsStr, 'PLS Requests (in-memory)'));
-        debugEmbed.addFields(...splitStringForEmbed(cooldownsStr, 'Cooldowns'));
-        debugEmbed.addFields(...splitStringForEmbed(activeTicketsStr, 'Active Tickets'));
-        debugEmbed.addFields(...splitStringForEmbed(ticketPanelInfoStr, 'Ticket Panel Info'));
+        // Send as a file if too large for embed description
+        const debugString = JSON.stringify(debugInfo, null, 2);
+        if (debugString.length > 2000) { // Discord embed description limit is 4096, but 2000 is safer for formatting
+            const debugFilePath = path.join(__dirname, 'debug_info.json');
+            fs.writeFileSync(debugFilePath, debugString);
+            const attachment = new AttachmentBuilder(debugFilePath, { name: 'debug_info.json' });
+            await message.author.send({
+                content: 'Here is the current debug information:',
+                files: [attachment]
+            });
+            fs.unlinkSync(debugFilePath);
+            embed.setTitle('Debug Info Sent! ✅')
+                 .setDescription('The debug information was too large for an embed and has been sent to your DMs as a file.');
+        } else {
+            embed.setTitle('⚙️ Bot Debug Information')
+                 .setDescription(`\`\`\`json\n${debugString}\n\`\`\``);
+        }
+        return message.channel.send({ embeds: [embed] });
+    }
 
-        return message.channel.send({ embeds: [debugEmbed] });
+    if (cmd === '=check') {
+        const uptimeSeconds = process.uptime();
+        const uptimeString = new Date(uptimeSeconds * 1000).toISOString().substr(11, 8); // HH:MM:SS
+        const memoryUsage = process.memoryUsage();
+        const usedMemoryMB = (memoryUsage.heapUsed / 1024 / 1024).toFixed(2);
+        const totalMemoryMB = (memoryUsage.heapTotal / 1024 / 1024).toFixed(2);
+
+        embed.setTitle('✅ Bot Status')
+             .setDescription(`I am online and operational!`)
+             .addFields(
+                 { name: 'Uptime', value: `\`${uptimeString}\``, inline: true },
+                 { name: 'Memory Usage (Heap)', value: `\`${usedMemoryMB}MB / ${totalMemoryMB}MB\``, inline: true },
+                 { name: 'Ping', value: `\`${client.ws.ping}ms\``, inline: true }
+             )
+             .setColor(0x2ecc71)
+             .setTimestamp();
+        return message.channel.send({ embeds: [embed] });
     }
 });
 
-// === Interaction Listener for Buttons ===
+
+// === Interaction Handler (for buttons) ===
 client.on('interactionCreate', async interaction => {
     if (!interaction.isButton()) return;
 
-    // Defer the reply to prevent "This interaction failed" error
-    await interaction.deferReply({ ephemeral: true });
+    const { customId, channel, member, guild, message } = interaction;
+    const embed = new EmbedBuilder().setColor(0x3498db); // Default embed color for interactions
 
-    if (!interaction.guild) {
-        return interaction.editReply({ content: 'This action can only be performed in a server channel.', ephemeral: true });
+    if (customId === 'open_ticket') {
+        await interaction.deferReply({ ephemeral: true }); // Acknowledge the interaction
+        const result = await createTicketChannel(member, guild);
+        return interaction.followUp({ embeds: [result.embed], ephemeral: true });
     }
 
-    const ticketChannel = interaction.channel;
-    const ticketInfo = activeTickets[ticketChannel.id];
-    const isStaff = interaction.member.roles.cache.has(STAFF_ROLE_ID) || interaction.user.id === OWNER_ID;
+    if (customId === 'close_ticket') {
+        await interaction.deferReply({ ephemeral: true });
+        const channelIdToClose = channel.id;
+        const ticketData = activeTickets[channelIdToClose];
 
-    // --- Open Ticket Logic ---
-    if (interaction.customId === 'open_ticket') {
-        const result = await createTicketChannel(interaction.member, interaction.guild, 'Opened via ticket panel');
-        await interaction.editReply({ embeds: [result.embed], ephemeral: true });
-    }
-
-    // --- Close Ticket Logic ---
-    else if (interaction.customId === 'close_ticket') {
-        if (!ticketInfo) {
-            return interaction.editReply({ content: 'This does not appear to be an active ticket channel.', ephemeral: true });
+        if (!ticketData) {
+            embed.setTitle('Not a Ticket Channel ℹ️')
+                 .setDescription('This button can only be used in an active ticket channel.');
+            return interaction.followUp({ embeds: [embed], ephemeral: true });
         }
 
-        const isOpener = interaction.user.id === ticketInfo.userId;
-        if (!isOpener && !isStaff) {
-            return interaction.editReply({ content: 'Only the ticket opener, bot owner, or support staff can close this ticket.', ephemeral: true });
+        const isAuthorizedToClose = interaction.user.id === ticketData.userId || member.permissions.has(PermissionsBitField.Flags.ManageChannels) || isAuthorized(interaction.user.id);
+
+        if (!isAuthorizedToClose) {
+            embed.setTitle('Permission Denied 🚫')
+                 .setDescription('You need to be the ticket creator, an authorized user, or have `Manage Channels` permission to close this ticket.');
+            return interaction.followUp({ embeds: [embed], ephemeral: true });
         }
-
-        // Inform users in the ticket channel
-        await ticketChannel.send({
-            embeds: [
-                new EmbedBuilder()
-                    .setDescription(`This ticket is being closed by <@${interaction.user.id}>...`)
-                    .setColor(0xffa500) // Orange
-            ]
-        });
-        await interaction.editReply({ content: 'Ticket closure initiated.', ephemeral: true });
-
-
-        // Log to a designated channel
-        const logChannel = await interaction.guild.channels.fetch(TICKET_LOG_CHANNEL_ID);
-        if (logChannel && logChannel.type === ChannelType.GuildText) {
-            const closeEmbed = new EmbedBuilder()
-                .setTitle('Ticket Closed 🗑️')
-                .setDescription(`Ticket <#${ticketChannel.id}> (\`${ticketChannel.name}\`) closed by ${interaction.user.tag}.`)
-                .addFields(
-                    { name: 'Ticket Opener', value: `<@${ticketInfo.userId}>`, inline: true },
-                    { name: 'Closed By', value: `${interaction.user.tag} (${interaction.user.id})`, inline: true }
-                )
-                .setColor(0xff0000) // Red
-                .setTimestamp();
-            logChannel.send({ embeds: [closeEmbed] });
-        }
-
-        // Remove ticket from active tickets
-        delete activeTickets[ticketChannel.id];
-        saveTicketsData();
-
-        // Delete the ticket channel after a short delay (e.g., 5 seconds)
-        setTimeout(async () => {
-            try {
-                await ticketChannel.delete('Ticket closed by user/staff.');
-                console.log(`Deleted ticket channel: ${ticketChannel.name}`);
-            } catch (deleteError) {
-                console.error(`Error deleting ticket channel ${ticketChannel.name}:`, deleteError);
-            }
-        }, 5000);
-    }
-
-    // --- Claim Ticket Logic ---
-    else if (interaction.customId === 'claim_ticket') {
-        if (!ticketInfo) {
-            return interaction.editReply({ content: 'This does not appear to be an active ticket channel.', ephemeral: true });
-        }
-        if (!isStaff) {
-            return interaction.editReply({ content: 'Only support staff can claim tickets.', ephemeral: true });
-        }
-        if (ticketInfo.claimedBy) {
-            return interaction.editReply({ content: `This ticket has already been claimed by <@${ticketInfo.claimedBy}>.`, ephemeral: true });
-        }
-
-        ticketInfo.claimedBy = interaction.user.id;
-        saveTicketsData();
-
-        const claimedEmbed = new EmbedBuilder()
-            .setDescription(`✅ This ticket has been claimed by <@${interaction.user.id}>.`)
-            .setColor(0x2ecc71) // Green
-            .setTimestamp();
-
-        // Disable the claim button after it's clicked
-        const updatedComponents = interaction.message.components.map(row => {
-            return new ActionRowBuilder().addComponents(
-                row.components.map(component => {
-                    if (component.customId === 'claim_ticket') {
-                        return ButtonBuilder.from(component).setDisabled(true);
-                    }
-                    return component;
-                })
-            );
-        });
-
-        await interaction.message.edit({ embeds: [interaction.message.embeds[0], claimedEmbed], components: updatedComponents });
-        await interaction.editReply({ content: 'You have claimed this ticket!', ephemeral: true });
-
-        // Log to a designated channel
-        const logChannel = await interaction.guild.channels.fetch(TICKET_LOG_CHANNEL_ID);
-        if (logChannel && logChannel.type === ChannelType.GuildText) {
-            const claimLogEmbed = new EmbedBuilder()
-                .setTitle('Ticket Claimed 🙋‍♂️')
-                .setDescription(`Ticket <#${ticketChannel.id}> (\`${ticketChannel.name}\`) claimed by ${interaction.user.tag}.`)
-                .addFields(
-                    { name: 'Ticket Opener', value: `<@${ticketInfo.userId}>`, inline: true },
-                    { name: 'Claimed By', value: `${interaction.user.tag} (${interaction.user.id})`, inline: true }
-                )
-                .setColor(0x0099ff) // Blue
-                .setTimestamp();
-            logChannel.send({ embeds: [claimLogEmbed] });
-        }
-    }
-
-    // --- Add User to Ticket Logic ---
-    else if (interaction.customId === 'add_user_ticket') {
-        if (!ticketInfo) {
-            return interaction.editReply({ content: 'This does not appear to be an active ticket channel.', ephemeral: true });
-        }
-        if (!isStaff) {
-            return interaction.editReply({ content: 'Only support staff can add users to tickets.', ephemeral: true });
-        }
-
-        await interaction.editReply({ content: 'Please mention the user you want to add to this ticket (e.g., `@user`). I will listen for your next message in this channel.', ephemeral: false });
-
-        const filter = m => m.author.id === interaction.user.id && m.mentions.users.size > 0;
-        const collector = interaction.channel.createMessageCollector({ filter, time: 60000, max: 1 });
-
-        collector.on('collect', async m => {
-            const userToAdd = m.mentions.users.first();
-            if (!userToAdd) {
-                await interaction.channel.send('No user mentioned. Please try again.');
-                return;
-            }
-
-            try {
-                await ticketChannel.permissionOverwrites.edit(userToAdd.id, {
-                    ViewChannel: true,
-                    SendMessages: true,
-                    ReadMessageHistory: true,
-                });
-                await interaction.channel.send({
-                    embeds: [
-                        new EmbedBuilder()
-                            .setDescription(`✅ <@${userToAdd.id}> has been added to the ticket.`)
-                            .setColor(0x2ecc71)
-                    ]
-                });
-                // Log to a designated channel
-                const logChannel = await interaction.guild.channels.fetch(TICKET_LOG_CHANNEL_ID);
-                if (logChannel && logChannel.type === ChannelType.GuildText) {
-                    logChannel.send({
-                        embeds: [
-                            new EmbedBuilder()
-                                .setTitle('User Added to Ticket')
-                                .setDescription(`User ${userToAdd.tag} added to ticket <#${ticketChannel.id}> by ${interaction.user.tag}.`)
-                                .setColor(0x00ff00)
-                                .setTimestamp()
-                        ]
-                    });
-                }
-            } catch (error) {
-                console.error('Error adding user to ticket:', error);
-                await interaction.channel.send({
-                    embeds: [
-                        new EmbedBuilder()
-                            .setDescription(`❌ Failed to add <@${userToAdd.id}> to the ticket: \`${error.message}\`.`)
-                            .setColor(0xff0000)
-                    ]
-                });
-            }
-            m.delete().catch(e => console.error("Could not delete staff message:", e)); // Clean up staff's message
-        });
-
-        collector.on('end', collected => {
-            if (collected.size === 0) {
-                interaction.channel.send({
-                    embeds: [
-                        new EmbedBuilder()
-                            .setDescription('No user was mentioned in time. Add user operation cancelled.')
-                            .setColor(0xffa500)
-                    ]
-                }).catch(e => console.error("Error sending collector end message:", e));
-            }
-        });
-    }
-
-    // --- Remove User from Ticket Logic ---
-    else if (interaction.customId === 'remove_user_ticket') {
-        if (!ticketInfo) {
-            return interaction.editReply({ content: 'This does not appear to be an active ticket channel.', ephemeral: true });
-        }
-        if (!isStaff) {
-            return interaction.editReply({ content: 'Only support staff can remove users from tickets.', ephemeral: true });
-        }
-
-        await interaction.editReply({ content: 'Please mention the user you want to remove from this ticket (e.g., `@user`). I will listen for your next message in this channel.', ephemeral: false });
-
-        const filter = m => m.author.id === interaction.user.id && m.mentions.users.size > 0;
-        const collector = interaction.channel.createMessageCollector({ filter, time: 60000, max: 1 });
-
-        collector.on('collect', async m => {
-            const userToRemove = m.mentions.users.first();
-            if (!userToRemove) {
-                await interaction.channel.send('No user mentioned. Please try again.');
-                return;
-            }
-
-            // Prevent removing the ticket opener or the bot itself
-            if (userToRemove.id === ticketInfo.userId || userToRemove.id === client.user.id) {
-                await interaction.channel.send({
-                    embeds: [
-                        new EmbedBuilder()
-                            .setDescription('❌ Cannot remove the ticket opener or the bot from the ticket.')
-                            .setColor(0xff0000)
-                    ]
-                });
-                m.delete().catch(e => console.error("Could not delete staff message:", e));
-                return;
-            }
-
-            try {
-                await ticketChannel.permissionOverwrites.edit(userToRemove.id, {
-                    ViewChannel: false, // Deny view access
-                });
-                await interaction.channel.send({
-                    embeds: [
-                        new EmbedBuilder()
-                            .setDescription(`✅ <@${userToRemove.id}> has been removed from the ticket.`)
-                            .setColor(0x2ecc71)
-                    ]
-                });
-                // Log to a designated channel
-                const logChannel = await interaction.guild.channels.fetch(TICKET_LOG_CHANNEL_ID);
-                if (logChannel && logChannel.type === ChannelType.GuildText) {
-                    logChannel.send({
-                        embeds: [
-                            new EmbedBuilder()
-                                .setTitle('User Removed from Ticket')
-                                .setDescription(`User ${userToRemove.tag} removed from ticket <#${ticketChannel.id}> by ${interaction.user.tag}.`)
-                                .setColor(0xffa500)
-                                .setTimestamp()
-                        ]
-                    });
-                }
-            } catch (error) {
-                console.error('Error removing user from ticket:', error);
-                await interaction.channel.send({
-                    embeds: [
-                        new EmbedBuilder()
-                            .setDescription(`❌ Failed to remove <@${userToRemove.id}> from the ticket: \`${error.message}\`.`)
-                            .setColor(0xff0000)
-                    ]
-                });
-            }
-            m.delete().catch(e => console.error("Could not delete staff message:", e));
-        });
-
-        collector.on('end', collected => {
-            if (collected.size === 0) {
-                interaction.channel.send({
-                    embeds: [
-                        new EmbedBuilder()
-                            .setDescription('No user was mentioned in time. Remove user operation cancelled.')
-                            .setColor(0xffa500)
-                    ]
-                }).catch(e => console.error("Error sending collector end message:", e));
-            }
-        });
-    }
-
-    // --- Transcript Ticket Logic ---
-    else if (interaction.customId === 'transcript_ticket') {
-        if (!ticketInfo) {
-            return interaction.editReply({ content: 'This does not appear to be an active ticket channel.', ephemeral: true });
-        }
-        if (!isStaff) {
-            return interaction.editReply({ content: 'Only support staff can generate ticket transcripts.', ephemeral: true });
-        }
-
-        await interaction.editReply({ content: 'Generating transcript... This might take a moment.', ephemeral: true });
 
         try {
-            const messages = await ticketChannel.messages.fetch({ limit: 100 }); // Fetch last 100 messages
-            const transcript = messages.reverse().map(m =>
-                `${new Date(m.createdTimestamp).toLocaleString()} - ${m.author.tag}: ${m.cleanContent}`
-            ).join('\n');
+            embed.setTitle('Closing Ticket... ⏳')
+                 .setDescription('This ticket will be closed shortly.')
+                 .setColor(0xffa500);
+            await channel.send({ embeds: [embed] }); // Send closing message in the ticket channel
 
-            const transcriptBuffer = Buffer.from(transcript, 'utf8');
-            const attachment = new AttachmentBuilder(transcriptBuffer, { name: `${ticketChannel.name}-transcript.txt` });
+            const logEmbed = new EmbedBuilder()
+                .setTitle('Ticket Closed 🗑️')
+                .setDescription(`Ticket channel ${channel.name} (ID: ${channelIdToClose}) closed by ${interaction.user}.`)
+                .addFields(
+                    { name: 'Opened By', value: `<@${ticketData.userId}>`, inline: true },
+                    { name: 'Reason', value: ticketData.reason, inline: true },
+                    { name: 'Opened At', value: new Date(ticketData.openedAt).toLocaleString(), inline: false }
+                )
+                .setColor(0xff0000)
+                .setTimestamp();
 
-            const logChannel = await interaction.guild.channels.fetch(TICKET_LOG_CHANNEL_ID);
+            if (TICKET_LOG_CHANNEL_ID) {
+                const logChannel = await guild.channels.cache.get(TICKET_LOG_CHANNEL_ID);
+                if (logChannel) {
+                    logChannel.send({ embeds: [logEmbed] });
+                }
+            }
+
+            delete activeTickets[channelIdToClose];
+            saveTicketsData();
+
+            await channel.delete('Ticket closed via button interaction.');
+            return interaction.followUp({ content: 'Ticket closed successfully!', ephemeral: true });
+
+        } catch (error) {
+            console.error('Error closing ticket via button:', error);
+            embed.setTitle('Error Closing Ticket ❌')
+                 .setDescription(`An error occurred while closing the ticket: \`${error.message}\``);
+            return interaction.followUp({ embeds: [embed], ephemeral: true });
+        }
+    }
+
+    if (customId === 'claim_ticket') {
+        await interaction.deferReply({ ephemeral: true });
+
+        const channelId = channel.id;
+        const ticketData = activeTickets[channelId];
+
+        if (!ticketData) {
+            embed.setTitle('Not a Ticket Channel ℹ️')
+                 .setDescription('This button can only be used in an active ticket channel.');
+            return interaction.followUp({ embeds: [embed], ephemeral: true });
+        }
+
+        if (!member.roles.cache.has(STAFF_ROLE_ID) && !isAuthorized(interaction.user.id)) {
+            embed.setTitle('Permission Denied 🚫')
+                 .setDescription('You need the Staff Role or be an authorized user to claim tickets.');
+            return interaction.followUp({ embeds: [embed], ephemeral: true });
+        }
+
+        if (ticketData.claimedBy) {
+            embed.setTitle('Ticket Already Claimed ⚠️')
+                 .setDescription(`This ticket has already been claimed by <@${ticketData.claimedBy}>.`);
+            return interaction.followUp({ embeds: [embed], ephemeral: true });
+        }
+
+        ticketData.claimedBy = interaction.user.id;
+        saveTicketsData();
+
+        embed.setTitle('Ticket Claimed! 🙋‍♂️')
+             .setDescription(`This ticket has been claimed by ${interaction.user}. They will assist you shortly.`);
+        await channel.send({ embeds: [embed] }); // Send in the ticket channel
+
+        // Update the original message buttons (optional, to show it's claimed)
+        if (message) {
+            const updatedActionRow = ActionRowBuilder.from(message.components[0]);
+            const claimButton = updatedActionRow.components.find(btn => btn.customId === 'claim_ticket');
+            if (claimButton) {
+                claimButton.setDisabled(true).setLabel(`Claimed by ${interaction.user.username}`);
+            }
+            await message.edit({ components: [updatedActionRow] });
+        }
+
+        return interaction.followUp({ content: 'You have successfully claimed this ticket!', ephemeral: true });
+    }
+
+    if (customId === 'add_user_ticket') {
+        await interaction.deferReply({ ephemeral: true });
+
+        const channelId = channel.id;
+        const ticketData = activeTickets[channelId];
+
+        if (!ticketData) {
+            embed.setTitle('Not a Ticket Channel ℹ️')
+                 .setDescription('This button can only be used in an active ticket channel.');
+            return interaction.followUp({ embeds: [embed], ephemeral: true });
+        }
+
+        if (!member.permissions.has(PermissionsBitField.Flags.ManageChannels) && !isAuthorized(interaction.user.id)) {
+            embed.setTitle('Permission Denied 🚫')
+                 .setDescription('You need `Manage Channels` permission or be an authorized user to add users to tickets.');
+            return interaction.followUp({ embeds: [embed], ephemeral: true });
+        }
+
+        const modal = new ModalBuilder()
+            .setCustomId('add_user_modal')
+            .setTitle('Add User to Ticket');
+
+        const userIdInput = new TextInputBuilder()
+            .setCustomId('userId')
+            .setLabel('User ID or Mention (e.g., 123456789012345678 or @user)')
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder('Enter User ID or mention them')
+            .setRequired(true);
+
+        const firstActionRow = new ActionRowBuilder().addComponents(userIdInput);
+        modal.addComponents(firstActionRow);
+
+        await interaction.showModal(modal);
+    }
+
+    if (customId === 'remove_user_ticket') {
+        await interaction.deferReply({ ephemeral: true });
+
+        const channelId = channel.id;
+        const ticketData = activeTickets[channelId];
+
+        if (!ticketData) {
+            embed.setTitle('Not a Ticket Channel ℹ️')
+                 .setDescription('This button can only be used in an active ticket channel.');
+            return interaction.followUp({ embeds: [embed], ephemeral: true });
+        }
+
+        if (!member.permissions.has(PermissionsBitField.Flags.ManageChannels) && !isAuthorized(interaction.user.id)) {
+            embed.setTitle('Permission Denied 🚫')
+                 .setDescription('You need `Manage Channels` permission or be an authorized user to remove users from tickets.');
+            return interaction.followUp({ embeds: [embed], ephemeral: true });
+        }
+
+        const modal = new ModalBuilder()
+            .setCustomId('remove_user_modal')
+            .setTitle('Remove User from Ticket');
+
+        const userIdInput = new TextInputBuilder()
+            .setCustomId('userId')
+            .setLabel('User ID or Mention (e.g., 123456789012345678 or @user)')
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder('Enter User ID or mention them')
+            .setRequired(true);
+
+        const firstActionRow = new ActionRowBuilder().addComponents(userIdInput);
+        modal.addComponents(firstActionRow);
+
+        await interaction.showModal(modal);
+    }
+
+    if (customId === 'transcript_ticket') {
+        await interaction.deferReply({ ephemeral: true });
+        const channelId = channel.id;
+        const ticketData = activeTickets[channelId];
+
+        if (!ticketData) {
+            embed.setTitle('Not a Ticket Channel ℹ️')
+                 .setDescription('This button can only be used in an active ticket channel.');
+            return interaction.followUp({ embeds: [embed], ephemeral: true });
+        }
+
+        if (!member.permissions.has(PermissionsBitField.Flags.ManageChannels) && !isAuthorized(interaction.user.id) && interaction.user.id !== ticketData.userId) {
+            embed.setTitle('Permission Denied 🚫')
+                 .setDescription('You need `Manage Channels` permission, be an authorized user, or the ticket creator to generate a transcript.');
+            return interaction.followUp({ embeds: [embed], ephemeral: true });
+        }
+
+        try {
+            const fetchedMessages = await channel.messages.fetch({ limit: 100 }); // Fetch last 100 messages
+            const messagesArray = Array.from(fetchedMessages.values()).sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+
+            let transcriptContent = `Ticket Transcript for #${channel.name} (ID: ${channel.id})\n`;
+            transcriptContent += `Opened by: ${ticketData.userId} on ${new Date(ticketData.openedAt).toLocaleString()}\n`;
+            if (ticketData.reason) transcriptContent += `Reason: ${ticketData.reason}\n`;
+            if (ticketData.claimedBy) transcriptContent += `Claimed by: ${ticketData.claimedBy}\n`;
+            transcriptContent += '------------------------------------\n\n';
+
+            messagesArray.forEach(msg => {
+                const authorTag = msg.author.tag;
+                const timestamp = new Date(msg.createdTimestamp).toLocaleString();
+                let content = msg.content;
+
+                // Handle embeds (simple representation)
+                if (msg.embeds.length > 0) {
+                    msg.embeds.forEach(emb => {
+                        content += `\n[EMBED] Title: ${emb.title || 'N/A'}`;
+                        if (emb.description) content += `\nDescription: ${emb.description}`;
+                        if (emb.fields.length > 0) {
+                            emb.fields.forEach(field => content += `\n  Field: ${field.name} - ${field.value}`);
+                        }
+                    });
+                }
+                // Handle attachments (list filenames)
+                if (msg.attachments.size > 0) {
+                    content += `\n[ATTACHMENTS]: ${Array.from(msg.attachments.values()).map(att => att.name).join(', ')}`;
+                }
+
+                transcriptContent += `[${timestamp}] ${authorTag}: ${content}\n`;
+            });
+
+            const transcriptBuffer = Buffer.from(transcriptContent, 'utf-8');
+            const attachment = new AttachmentBuilder(transcriptBuffer, { name: `transcript-${channel.name}.txt` });
+
+            const logChannel = await guild.channels.cache.get(TICKET_LOG_CHANNEL_ID);
             if (logChannel && logChannel.type === ChannelType.GuildText) {
                 await logChannel.send({
                     embeds: [
@@ -2011,6 +1690,124 @@ client.on('interactionCreate', async interaction => {
         } catch (error) {
             console.error('Error generating transcript:', error);
             await interaction.followUp({ content: `Failed to generate transcript: \`${error.message}\`.`, ephemeral: true });
+        }
+    }
+});
+
+
+client.on('modalSubmit', async modal => {
+    if (modal.customId === 'add_user_modal') {
+        await modal.deferReply({ ephemeral: true });
+        const userIdOrMention = modal.fields.getTextInputValue('userId');
+        const channel = modal.channel;
+
+        const ticketData = activeTickets[channel.id];
+        if (!ticketData) {
+            return modal.followUp({ content: 'This is not an active ticket channel.', ephemeral: true });
+        }
+
+        if (!modal.member.permissions.has(PermissionsBitField.Flags.ManageChannels) && !isAuthorized(modal.user.id)) {
+            return modal.followUp({ content: 'You do not have permission to add users to tickets.', ephemeral: true });
+        }
+
+        try {
+            let targetUser;
+            const userIdMatch = userIdOrMention.match(/\d+/); // Extract ID from mention or plain ID
+            const targetId = userIdMatch ? userIdMatch[0] : null;
+
+            if (targetId) {
+                targetUser = await modal.guild.members.fetch(targetId).catch(() => null);
+            }
+
+            if (!targetUser) {
+                return modal.followUp({ content: 'Could not find the user. Please provide a valid User ID or mention.', ephemeral: true });
+            }
+
+            // Check if user is already in the channel
+            const currentPermissions = channel.permissionsFor(targetUser);
+            if (currentPermissions.has(PermissionsBitField.Flags.ViewChannel)) {
+                return modal.followUp({ content: `${targetUser.user.tag} is already in this ticket channel.`, ephemeral: true });
+            }
+
+            await channel.permissionOverwrites.edit(targetUser.id, {
+                ViewChannel: true,
+                SendMessages: true,
+                ReadMessageHistory: true,
+            });
+
+            await channel.send({ embeds: [
+                new EmbedBuilder()
+                    .setTitle('User Added to Ticket ➕')
+                    .setDescription(`${targetUser.user.tag} has been added to the ticket by ${modal.user.tag}.`)
+                    .setColor(0x00ff00)
+            ]});
+            return modal.followUp({ content: `${targetUser.user.tag} has been successfully added to the ticket.`, ephemeral: true });
+
+        } catch (error) {
+            console.error('Error adding user to ticket:', error);
+            return modal.followUp({ content: `Failed to add user: \`${error.message}\`. Please ensure the bot has necessary permissions.`, ephemeral: true });
+        }
+    }
+
+    if (modal.customId === 'remove_user_modal') {
+        await modal.deferReply({ ephemeral: true });
+        const userIdOrMention = modal.fields.getTextInputValue('userId');
+        const channel = modal.channel;
+
+        const ticketData = activeTickets[channel.id];
+        if (!ticketData) {
+            return modal.followUp({ content: 'This is not an active ticket channel.', ephemeral: true });
+        }
+
+        if (!modal.member.permissions.has(PermissionsBitField.Flags.ManageChannels) && !isAuthorized(modal.user.id)) {
+            return modal.followUp({ content: 'You do not have permission to remove users from tickets.', ephemeral: true });
+        }
+
+        try {
+            let targetUser;
+            const userIdMatch = userIdOrMention.match(/\d+/);
+            const targetId = userIdMatch ? userIdMatch[0] : null;
+
+            if (targetId) {
+                targetUser = await modal.guild.members.fetch(targetId).catch(() => null);
+            }
+
+            if (!targetUser) {
+                return modal.followUp({ content: 'Could not find the user. Please provide a valid User ID or mention.', ephemeral: true });
+            }
+
+            // Prevent removing the ticket creator or the bot itself
+            if (targetUser.id === ticketData.userId) {
+                return modal.followUp({ content: 'You cannot remove the ticket creator from the ticket.', ephemeral: true });
+            }
+            if (targetUser.id === modal.client.user.id) {
+                return modal.followUp({ content: 'You cannot remove the bot from the ticket.', ephemeral: true });
+            }
+
+
+            // Check if user is actually in the channel
+            const currentPermissions = channel.permissionsFor(targetUser);
+            if (!currentPermissions.has(PermissionsBitField.Flags.ViewChannel)) {
+                return modal.followUp({ content: `${targetUser.user.tag} is not currently in this ticket channel.`, ephemeral: true });
+            }
+
+            await channel.permissionOverwrites.edit(targetUser.id, {
+                ViewChannel: false,
+                SendMessages: false,
+                ReadMessageHistory: false,
+            });
+
+            await channel.send({ embeds: [
+                new EmbedBuilder()
+                    .setTitle('User Removed from Ticket ➖')
+                    .setDescription(`${targetUser.user.tag} has been removed from the ticket by ${modal.user.tag}.`)
+                    .setColor(0xff0000)
+            ]});
+            return modal.followUp({ content: `${targetUser.user.tag} has been successfully removed from the ticket.`, ephemeral: true });
+
+        } catch (error) {
+            console.error('Error removing user from ticket:', error);
+            return modal.followUp({ content: `Failed to remove user: \`${error.message}\`. Please ensure the bot has necessary permissions.`, ephemeral: true });
         }
     }
 });
