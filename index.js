@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, Partials, AttachmentBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionsBitField } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, AttachmentBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionsBitField, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -6,57 +6,82 @@ const AdmZip = require('adm-zip');
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
 const express = require('express');
 
-// === Config & Constants ===
-const TOKEN = process.env.TOKEN || 'YOUR_BOT_TOKEN'; // Use env or fallback
+// === Consolidated Config & Constants ===
+// IMPORTANT: Replace these with your actual Discord IDs
+const TOKEN = process.env.TOKEN || 'YOUR_BOT_TOKEN'; // Your bot's token
 const OWNER_ID = '1110864648787480656'; // Your Discord User ID - ONLY THIS USER CAN SETUP THE TICKET PANEL
-const AUTHORIZED_USERS = ['1389567581853319268', '1110864648787480656', '1380028507228209232', '1333798275601662056']; // Authorized User IDs for admin commands
-const VOUCH_CHANNEL_ID = '1374018342444204067'; // Vouch Channel ID
+// Combined Authorized Users from both files
+const AUTHORIZED_USERS = [
+    '1389567581853319268', // From zaid 1234.txt
+    '1110864648787480656', // From both
+    '1380028507228209232', // From zaid 1234.txt
+    '1333798275601662056', // From both
+    '1212961835582623755'  // From zaid 123.txt
+];
 
 // --- Consolidated Staff Role ---
 // This role will be used for:
-// - Permissions for =csend
-// - Permissions for =redeem
 // - The role to be pinged when a new ticket is created
 // - The role that can manage/claim tickets
+// - The role that can use =redeem command
 const STAFF_ROLE_ID = '1376539272714260501'; // <--- IMPORTANT: REPLACE WITH YOUR STAFF ROLE ID
+const REDEEM_ALLOWED_ROLE_ID = STAFF_ROLE_ID; // Using STAFF_ROLE_ID for redeem as it was 1376539272714260501 in both
 
-// --- Ticket System Config ---
+// --- Ticket System Channel IDs ---
 const TICKET_CATEGORY_ID = '1385685111177089045'; // <--- IMPORTANT: REPLACE WITH YOUR TICKET CATEGORY ID
 const TICKET_LOG_CHANNEL_ID = '1385685463142240356'; // <--- IMPORTANT: REPLACE WITH YOUR TICKET LOG CHANNEL ID
 
-const DATA_DIR = './data';
-const COOKIE_DIR = './cookies';
-const VOUCH_PATH = './vouches.json';
-const STOCK_PATH = './data/stock.json';
-const ROLES_PATH = './data/roles.json';
-const REDEEMED_PATH = './data/redeemed.json';
-const CHANNEL_RESTRICTIONS_PATH = './data/channelRestrictions.json';
-const COOLDOWN_PATH = './data/cooldowns.json'; // Path for cooldowns data
-const TICKETS_DATA_PATH = './data/tickets.json'; // To store active ticket information and panel info
+// --- Other Specific Channel/Role IDs ---
+const CSEND_REQUIRED_ROLE_ID = '1374250200511680656'; // Example Role ID for =csend command (from zaid 123.txt)
+const VOUCH_CHANNEL_ID = '1374018342444204067'; // <--- IMPORTANT: SET YOUR VOUCH CHANNEL ID HERE (from zaid 123.txt)
+
+// === Data Directories & Paths ===
+const DATA_DIR = './data'; // Common in both
+const COOKIE_DIR = './cookies'; // From zaid 123.txt
+
+// Specific data files
+const TICKETS_DATA_PATH = './data/tickets.json'; // From zaid 1234.txt
+const VOUCH_PATH = './vouches.json'; // From zaid 123.txt
+const STOCK_PATH = './data/stock.json'; // From zaid 123.txt
+const ROLES_PATH = './data/roles.json'; // From zaid 123.txt
+const REDEEMED_PATH = './data/redeemed.json'; // From zaid 123.txt
+const CHANNEL_RESTRICTIONS_PATH = './data/channelRestrictions.json'; // From zaid 123.txt
+const COOLDOWN_PATH = './data/cooldowns.json'; // From zaid 123.txt
 
 // === Ensure directories exist ===
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
 if (!fs.existsSync(COOKIE_DIR)) fs.mkdirSync(COOKIE_DIR);
 
 // Ensure all JSON files exist with default empty objects
-[VOUCH_PATH, STOCK_PATH, ROLES_PATH, REDEEMED_PATH, CHANNEL_RESTRICTIONS_PATH, COOLDOWN_PATH, TICKETS_DATA_PATH].forEach(filePath => {
+[
+    TICKETS_DATA_PATH, VOUCH_PATH, STOCK_PATH, ROLES_PATH,
+    REDEEMED_PATH, CHANNEL_RESTRICTIONS_PATH, COOLDOWN_PATH
+].forEach(filePath => {
     if (!fs.existsSync(filePath)) {
         console.log(`${path.basename(filePath)} not found, creating new one.`);
-        fs.writeFileSync(filePath, JSON.stringify({}));
+        // Special handling for tickets.json to include ticketPanelInfo
+        if (filePath === TICKETS_DATA_PATH) {
+            fs.writeFileSync(filePath, JSON.stringify({ activeTickets: {}, ticketPanelInfo: { channelId: null, messageId: null } }));
+        } else {
+            fs.writeFileSync(filePath, JSON.stringify({}));
+        }
     }
 });
 
 // === Global data stores ===
-let rolesAllowed = {};         // { commandName: roleId }
-let stock = {};                // { category: [item1, item2, ...] }
-let redeemed = {};             // { hexCode: { redeemed: boolean, ... } }
-let channelRestrictions = {};  // { commandName: channelId }
-let cooldowns = {};            // { commandName: { duration: seconds, lastUsed: { userId: timestamp_ms } } }
-let activeTickets = {};        // { ticketChannelId: { userId: string, openedAt: string, reason: string, claimedBy?: string } }
+// Ticket System Data (from zaid 1234.txt)
+let activeTickets = {};        // { ticketChannelId: { userId: string, openedAt: string, reason: string, claimedBy?: string, guildId: string, scheduledDeletionTimestamp?: number } }
 let ticketPanelInfo = {        // Stores ticket panel message and channel IDs
     channelId: null,
     messageId: null
 };
+
+// General Bot Data (from zaid 123.txt)
+let rolesAllowed = {};         // { commandName: roleId }
+let stock = {};                // { category: [item1, item2, ...] }
+let redeemed = {};             // { hexCode: { redeemed: boolean, ... } } (Note: This was for manual redemption, now replaced by generatedCodes)
+let channelRestrictions = {};  // { commandName: channelId }
+let cooldowns = {};            // { commandName: { duration: seconds, lastUsed: { userId: timestamp_ms } } }
 
 // Stores generated unique codes: { hexCode: { redeemed: boolean, category: string, stockName: string, generatedBy: string, timestamp: string } }
 const generatedCodes = {}; // In-memory for current session
@@ -69,7 +94,7 @@ const dynamicCommandMap = {};
 
 // Set of all static command names (without '=') for validation
 const ALL_STATIC_COMMAND_NAMES = new Set([
-    'vouch', // for +vouch and -vouch
+    'vouch', 'mvouch', // for +vouch and -vouch, +mvouch, -mvouch
     'profile',
     'addcategory',
     'categoryremove',
@@ -77,8 +102,8 @@ const ALL_STATIC_COMMAND_NAMES = new Set([
     'removestock',
     'add',
     'remove',
-    'stockoverview', // Renamed from stock
-    'stock',         // Renamed from stockall
+    'stock',
+    'stockall',
     'cstock',
     'upload',
     'csend',
@@ -89,17 +114,14 @@ const ALL_STATIC_COMMAND_NAMES = new Set([
     'restrict',
     'unrestrict',
     'cremove',
-    'mvouch',
     'cool',
     'timesaved',
-    'ticket',
-    'newticket',
-    'closeticket',
-    'help',
-    'setuppanel', // NEW
-    'check' // Added for the placeholder command
+    // Ticket System Commands (added from zaid 1234.txt)
+    'ticket', 'newticket', 'closeticket', 'setuppanel'
 ]);
 
+// Stores timeout IDs for scheduled ticket deletions (transient, not persisted)
+const scheduledTimeouts = new Map(); // { channelId: timeoutId }
 
 // === Helper functions for data persistence ===
 function loadJSON(filepath, defaultValue = {}) {
@@ -111,39 +133,43 @@ function loadJSON(filepath, defaultValue = {}) {
         return defaultValue;
     }
 }
+
 function saveJSON(filepath, data) {
     fs.writeFileSync(filepath, JSON.stringify(data, null, 2), 'utf8');
 }
-// Specific loaders/savers for clarity
-function loadVouches() { return loadJSON(VOUCH_PATH); }
-function saveVouches(data) { saveJSON(VOUCH_PATH, data); }
-function loadCooldowns() { return loadJSON(COOLDOWN_PATH); }
-function saveCooldowns(data) { saveJSON(COOLDOWN_PATH, data); }
-function loadTicketsData() { // Consolidated ticket data loader
+
+// Specific loader/saver for consolidated ticket data
+function loadTicketsData() {
     const data = loadJSON(TICKETS_DATA_PATH, { activeTickets: {}, ticketPanelInfo: { channelId: null, messageId: null } });
     activeTickets = data.activeTickets || {};
     ticketPanelInfo = data.ticketPanelInfo || { channelId: null, messageId: null };
 }
-function saveTicketsData() { // Consolidated ticket data saver
+
+function saveTicketsData() {
     saveJSON(TICKETS_DATA_PATH, { activeTickets, ticketPanelInfo });
 }
 
-// Main data loader/saver
-function loadData() {
+// Specific loaders/savers for general bot data
+function loadVouches() { return loadJSON(VOUCH_PATH); }
+function saveVouches(data) { saveJSON(VOUCH_PATH, data); }
+function loadCooldowns() { return loadJSON(COOLDOWN_PATH); }
+function saveCooldowns(data) { saveJSON(COOLDOWN_PATH, data); }
+
+// Main data loader/saver for stock, roles, restrictions, cooldowns
+function loadBotData() {
     stock = loadJSON(STOCK_PATH);
-    redeemed = loadJSON(REDEEMED_PATH);
+    redeemed = loadJSON(REDEEMED_PATH); // This 'redeemed' is for manual redemption, 'generatedCodes' is in-memory
     rolesAllowed = loadJSON(ROLES_PATH);
     channelRestrictions = loadJSON(CHANNEL_RESTRICTIONS_PATH);
     cooldowns = loadCooldowns();
-    loadTicketsData(); // Load active tickets and panel info
 }
-function saveData() {
+
+function saveBotData() {
     saveJSON(STOCK_PATH, stock);
     saveJSON(REDEEMED_PATH, redeemed);
     saveJSON(ROLES_PATH, rolesAllowed);
     saveJSON(CHANNEL_RESTRICTIONS_PATH, channelRestrictions);
     saveCooldowns(cooldowns);
-    saveTicketsData(); // Save active tickets and panel info
 }
 
 // === File Stock Tracking (for cookies) ===
@@ -172,10 +198,94 @@ function updateDynamicCommandMap() {
 }
 
 // === Initialize data on startup ===
-loadData();
+loadTicketsData(); // Load ticket system data
+loadBotData();     // Load general bot data
 updateFileStock();
 updateDynamicCommandMap(); // Populate map on startup
 
+// Function to check if user is authorized for general bot admin commands
+const isAuthorized = (userId) => AUTHORIZED_USERS.includes(userId);
+
+// === Ticket Deletion Scheduling Functions ===
+async function scheduleTicketDeletion(channelId, delayMs) {
+    // Clear any existing timeout for this channel to prevent duplicates
+    if (scheduledTimeouts.has(channelId)) {
+        clearTimeout(scheduledTimeouts.get(channelId));
+        scheduledTimeouts.delete(channelId);
+    }
+
+    const timeout = setTimeout(async () => {
+        console.log(`Attempting to delete ticket channel ${channelId} after scheduled delay.`);
+        const ticketData = activeTickets[channelId];
+        if (!ticketData) {
+            console.log(`Ticket data for ${channelId} not found during scheduled deletion, likely already deleted.`);
+            scheduledTimeouts.delete(channelId);
+            return;
+        }
+
+        try {
+            const guild = client.guilds.cache.get(ticketData.guildId); // Use stored guildId
+            if (!guild) {
+                console.error(`Guild for ticket ${channelId} not found during scheduled deletion.`);
+                return;
+            }
+            const channel = await guild.channels.fetch(channelId).catch(() => null);
+
+            if (channel && channel.deletable) {
+                const logEmbed = new EmbedBuilder()
+                    .setTitle('Ticket Auto-Deleted (Scheduled) 💥')
+                    .setDescription(`Ticket channel ${channel.name} (ID: ${channel.id}) was auto-deleted after 6 hours due to \`=pls\` command usage.`)
+                    .addFields(
+                        { name: 'Opened By', value: `<@${ticketData.userId}>`, inline: true },
+                        { name: 'Reason', value: ticketData.reason, inline: true }
+                    )
+                    .setColor(0xffa500) // Orange for warning/auto-action
+                    .setTimestamp();
+
+                if (TICKET_LOG_CHANNEL_ID) {
+                    const logChannel = await guild.channels.cache.get(TICKET_LOG_CHANNEL_ID);
+                    if (logChannel) {
+                        logChannel.send({ embeds: [logEmbed] });
+                    }
+                }
+
+                await channel.send({ embeds: [
+                    new EmbedBuilder()
+                        .setTitle('Ticket Deleting... ⏳')
+                        .setDescription('This ticket is now being automatically deleted due to the use of the `=pls` command.')
+                        .setColor(0xffa500)
+                ]});
+                await channel.delete('Scheduled deletion due to =pls command.');
+                console.log(`Ticket channel ${channelId} deleted successfully.`);
+            } else {
+                console.warn(`Channel ${channelId} not found or not deletable during scheduled deletion.`);
+            }
+        } catch (error) {
+            console.error(`Error during scheduled ticket deletion for ${channelId}:`, error);
+        } finally {
+            // Clean up activeTickets and scheduledTimeouts regardless of deletion success
+            delete activeTickets[channelId];
+            saveTicketsData();
+            scheduledTimeouts.delete(channelId);
+        }
+    }, delayMs);
+
+    scheduledTimeouts.set(channelId, timeout);
+    console.log(`Ticket ${channelId} scheduled for deletion in ${delayMs / 1000} seconds.`);
+}
+
+function cancelTicketDeletion(channelId) {
+    if (scheduledTimeouts.has(channelId)) {
+        clearTimeout(scheduledTimeouts.get(channelId));
+        scheduledTimeouts.delete(channelId);
+        console.log(`Cancelled scheduled deletion for ticket ${channelId}.`);
+    }
+    // Also remove the timestamp from persisted data
+    if (activeTickets[channelId]) {
+        activeTickets[channelId].scheduledDeletionTimestamp = null;
+        saveTicketsData();
+    }
+}
 
 // === Client Setup ===
 const client = new Client({
@@ -184,13 +294,14 @@ const client = new Client({
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.DirectMessages,
-        GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.GuildMembers, // Required for fetching members and roles
     ],
-    partials: [Partials.Channel, Partials.Message, Partials.GuildMember],
+    partials: [Partials.Channel, Partials.Message, Partials.GuildMember], // Required for caching members and channels
 });
 
 client.once('ready', async () => {
-    console.log(`✅ Logged in as ${client.user.tag}`);
+    console.log(`✅ Bot Logged in as ${client.user.tag}`);
+
     // Attempt to restore ticket panel message if info exists
     if (ticketPanelInfo.channelId && ticketPanelInfo.messageId) {
         try {
@@ -205,46 +316,27 @@ client.once('ready', async () => {
             saveTicketsData();
         }
     }
+
+    // NEW: Re-schedule pending ticket deletions on bot startup
+    for (const channelId in activeTickets) {
+        const ticket = activeTickets[channelId];
+        if (ticket.scheduledDeletionTimestamp) {
+            const remainingTime = ticket.scheduledDeletionTimestamp - Date.now();
+            if (remainingTime > 0) {
+                console.log(`Re-scheduling deletion for ticket ${channelId}. Remaining: ${remainingTime / 1000}s`);
+                scheduleTicketDeletion(channelId, remainingTime);
+            } else {
+                // Ticket was due for deletion during downtime, delete it now (with a small delay to allow bot to fully start)
+                console.log(`Ticket ${channelId} was due for deletion. Scheduling immediate deletion.`);
+                await scheduleTicketDeletion(channelId, 1000); // Schedule for 1 second later
+            }
+        }
+    }
 });
 
 function generateHexCode() {
     return Math.random().toString(16).substring(2, 8).toUpperCase();
 }
-
-// Function to check if user is authorized
-const isAuthorized = (userId) => AUTHORIZED_USERS.includes(userId);
-
-// Reusable function to send profile embed
-async function sendProfileEmbed(channel, user) {
-    const vouches = loadVouches();
-    const data = vouches[user.id];
-    const embed = new EmbedBuilder().setColor(0x2ecc71);
-
-    if (!data) {
-        embed.setTitle('Profile Not Found ℹ️')
-             .setDescription(`${user.tag} has not received any vouches or reviews yet.`);
-        return channel.send({ embeds: [embed] });
-    }
-
-    embed.setTitle(`${user.tag}'s Vouch & Review Profile`)
-         .setThumbnail(user.displayAvatarURL())
-         .addFields(
-             { name: '✅ Positive Reviews', value: `${data.positive || 0}`, inline: true }, // Changed from data.positiveCount
-             { name: '❌ Negative Reviews', value: `${data.negative || 0}`, inline: true }, // Changed from data.negativeCount
-             { name: 'Last Reviewed On', value: `${data.lastVouched || 'N/A'}`, inline: false }
-         );
-
-    // Assuming 'reasons' is structured as before if you want to display them
-    // For simplicity, I'm adapting to the current vouch structure (positive/negative counts)
-    // If you need to display individual reasons, ensure they are stored in vouches.json
-    // and adapt this section.
-
-    embed.setFooter({ text: `User ID: ${user.id}` })
-         .setTimestamp();
-
-    return channel.send({ embeds: [embed] });
-}
-
 
 // Reusable ticket creation logic
 async function createTicketChannel(member, guild, reason = 'No reason provided') {
@@ -296,13 +388,14 @@ async function createTicketChannel(member, guild, reason = 'No reason provided')
             userId: member.id,
             openedAt: new Date().toISOString(),
             reason: reason,
-            claimedBy: null // Initially not claimed
+            claimedBy: null, // Initially not claimed
+            guildId: guild.id, // NEW: Store guild ID for scheduled deletion
+            scheduledDeletionTimestamp: null // NEW: Initialize as null
         };
         saveTicketsData();
 
         // Ping the user who created the ticket
         await ticketChannel.send(`Welcome, ${member.toString()}!`);
-
 
         // Ping the staff role
         await ticketChannel.send(`<@&${STAFF_ROLE_ID}>`);
@@ -369,7 +462,6 @@ async function createTicketChannel(member, guild, reason = 'No reason provided')
         return { success: false, embed };
     }
 }
-
 
 // Function to handle dynamic stock generation commands (e.g., =fgen, =pgen)
 async function handleDynamicGenCommand(msg, category) {
@@ -467,52 +559,17 @@ client.on('messageCreate', async message => {
     const embed = new EmbedBuilder().setColor(0x3498db); // Default embed color
 
     // --- Guild Context Check ---
+    // Many commands require message.member or message.guild.permissions, etc.
+    // If it's not a guild message, these properties will be null.
+    // We explicitly allow =backup to proceed without a guild context check, as it DMs the user.
+    // All other commands that manage server data or check roles/permissions should be restricted to guilds.
     if (!message.guild && commandWithoutPrefix !== 'backup') {
         if (message.channel.type === ChannelType.DM) {
             embed.setTitle('Command Restricted 🚫')
                  .setDescription('This command can only be used in a server channel.');
             return message.channel.send({ embeds: [embed] });
         }
-        return;
-    }
-
-    // --- Handle =pls command in tickets ---
-    if (cmd === '=pls' && message.channel.type === ChannelType.GuildText && activeTickets[message.channel.id]) {
-        try {
-            embed.setTitle('🛑 Command Not Allowed in Tickets')
-                 .setDescription('The `PLS` command is not allowed in ticket channels. This ticket will be deleted.');
-            await message.channel.send({ embeds: [embed] });
-            await message.delete(); // Delete the =pls message
-
-            const ticketData = activeTickets[message.channel.id];
-            const logEmbed = new EmbedBuilder()
-                .setTitle('Ticket Auto-Deleted! 💥')
-                .setDescription(`Ticket channel ${message.channel.name} (ID: ${message.channel.id}) was auto-deleted because \`=pls\` command was detected.`)
-                .addFields(
-                    { name: 'Opened By', value: `<@${ticketData.userId}>`, inline: true },
-                    { name: 'Reason', value: ticketData.reason, inline: true }
-                )
-                .setColor(0xffa500) // Orange for warning/auto-action
-                .setTimestamp();
-
-            if (TICKET_LOG_CHANNEL_ID) {
-                const logChannel = await message.guild.channels.cache.get(TICKET_LOG_CHANNEL_ID);
-                if (logChannel) {
-                    logChannel.send({ embeds: [logEmbed] });
-                }
-            }
-
-            delete activeTickets[message.channel.id];
-            saveTicketsData(); // Save updated tickets
-            await message.channel.delete('`=pls` command detected in ticket.');
-
-        } catch (error) {
-            console.error('Error handling =pls in ticket or deleting ticket:', error);
-            if (message.channel.viewable) {
-                message.channel.send({ content: 'An error occurred while trying to delete the ticket due to `=pls` command.' });
-            }
-        }
-        return; // Prevent further processing if =pls is detected in a ticket
+        return; // For messages not in DMs but still not in a guild (rare, but good for safety)
     }
 
     // --- Cooldown Check ---
@@ -535,7 +592,7 @@ client.on('messageCreate', async message => {
             cooldowns[commandWithoutPrefix].lastUsed = {};
         }
         cooldowns[commandWithoutPrefix].lastUsed[message.author.id] = Date.now();
-        saveCooldowns(cooldowns);
+        saveCooldowns(cooldowns); // Save updated cooldowns
     }
 
     // --- Channel Restriction Check ---
@@ -547,32 +604,23 @@ client.on('messageCreate', async message => {
         }
     }
 
-    // --- Dynamic Command Handling ---
+    // --- Dynamic Command Handling (e.g., =fgen) ---
     const categoryForDynamicCmd = dynamicCommandMap[commandWithoutPrefix];
     if (categoryForDynamicCmd) {
         await handleDynamicGenCommand(message, categoryForDynamicCmd);
         return;
     }
 
+    // === Static Command Handling ===
+
     // --- Ticket System Commands ---
     if (cmd === '=ticket' || cmd === '=newticket') {
-        if (!message.guild) {
-            embed.setTitle('Command Restricted 🚫')
-                 .setDescription('This command can only be used in a server channel.');
-            return message.channel.send({ embeds: [embed] });
-        }
         const reason = args.slice(1).join(' ');
         const result = await createTicketChannel(message.member, message.guild, reason);
         return message.channel.send({ embeds: [result.embed] });
     }
 
     if (cmd === '=closeticket') {
-        if (!message.guild) {
-            embed.setTitle('Command Restricted 🚫')
-                 .setDescription('This command can only be used in a server channel.');
-            return message.channel.send({ embeds: [embed] });
-        }
-
         const channelIdToClose = message.channel.id;
         const ticketData = activeTickets[channelIdToClose];
 
@@ -593,6 +641,9 @@ client.on('messageCreate', async message => {
         try {
             const ticketChannel = message.guild.channels.cache.get(channelIdToClose);
             if (ticketChannel) {
+                // NEW: Cancel any pending scheduled deletion
+                cancelTicketDeletion(channelIdToClose);
+
                 embed.setTitle('Closing Ticket... ⏳')
                      .setDescription('This ticket will be closed shortly.')
                      .setColor(0xffa500); // Orange aura for closing
@@ -616,10 +667,9 @@ client.on('messageCreate', async message => {
                     }
                 }
 
-                delete activeTickets[channelIdToClose];
-                saveTicketsData();
-
                 await ticketChannel.delete('Ticket closed by user or staff.');
+                delete activeTickets[channelIdToClose]; // Remove from activeTickets after channel deletion
+                saveTicketsData();
             }
         } catch (error) {
             console.error('Error closing ticket:', error);
@@ -635,11 +685,6 @@ client.on('messageCreate', async message => {
         if (message.author.id !== OWNER_ID) {
             embed.setTitle('Permission Denied 🚫')
                  .setDescription('Only the bot owner can set up the ticket panel.');
-            return message.channel.send({ embeds: [embed] });
-        }
-        if (!message.guild) {
-            embed.setTitle('Command Restricted 🚫')
-                 .setDescription('This command can only be used in a server channel.');
             return message.channel.send({ embeds: [embed] });
         }
         if (!TICKET_CATEGORY_ID || !TICKET_LOG_CHANNEL_ID || !STAFF_ROLE_ID) {
@@ -696,132 +741,70 @@ client.on('messageCreate', async message => {
             return message.channel.send({ embeds: [embed] });
         }
     }
-    // --- END Ticket System Commands ---
 
-
-    // --- Help Command ---
-    if (cmd === '=help') {
-        const helpEmbed = new EmbedBuilder()
-            .setTitle('📚 Bot Commands Help')
-            .setColor(0x007bff) // A nice blue
-            .setDescription('Here is a list of commands you can use. Some commands may require specific roles or permissions.');
-
-        const addCommandField = (name, description, permissionNeeded = null, adminOnly = false) => {
-            if (adminOnly && !isAuthorized(message.author.id)) return;
-            if (permissionNeeded && message.member && !message.member.permissions.has(permissionNeeded)) return;
-
-            helpEmbed.addFields({ name: name, value: description, inline: false });
-        };
-
-        // Vouch & Profile Commands
-        helpEmbed.addFields({ name: '__Vouch & Profile Commands__', value: '\u200b', inline: false });
-        addCommandField('+vouch @user <reason>', 'Add a positive vouch for a user.');
-        addCommandField('-vouch @user <reason>', 'Add a negative review for a user.');
-        addCommandField('+mvouch @user <amount> [reason]', 'Manually add positive vouches for a user.', PermissionsBitField.Flags.ManageGuild, true);
-        addCommandField('-mvouch @user <amount> [reason]', 'Manually add negative vouches for a user.', PermissionsBitField.Flags.ManageGuild, true);
-        addCommandField('=profile [@user]', 'View vouch and review profile for yourself or another user.');
-
-        // Stock Management Commands
-        helpEmbed.addFields({ name: '__Stock Management Commands__', value: '\u200b', inline: false });
-        addCommandField('=addcategory <name>', 'Create a new stock category.', PermissionsBitField.Flags.ManageGuild, true);
-        addCommandField('=categoryremove <category>', 'Remove an existing stock category, its dynamic command, and all items.', PermissionsBitField.Flags.ManageGuild, true);
-        addCommandField('=addstock <category> <stock_name>', 'Add a new item to a stock category.', PermissionsBitField.Flags.ManageGuild, true);
-        addCommandField('=removestock <category> <stock_name>', 'Remove an item from a stock category.', PermissionsBitField.Flags.ManageGuild, true);
-        helpEmbed.addFields({ name: '=stockoverview [category]', value: 'View the overview of all stock categories or detailed stock for a specific category.', inline: false }); // Swapped
-        helpEmbed.addFields({ name: '=stock', value: 'View all items across all stock categories.', inline: false }); // Swapped
-
-        // Cookie/File Management Commands
-        helpEmbed.addFields({ name: '__Cookie/File Management Commands__', value: '\u200b', inline: false });
-        addCommandField('=cstock', 'View the overview of cookie/file stock categories.');
-        addCommandField('=upload <cookie_category>', 'Upload a ZIP file of cookies/files to a specified category.', null, true);
-        addCommandField('=cremove <cookie_category>', 'Remove an entire cookie category and receive its contents as a ZIP in DMs.', PermissionsBitField.Flags.ManageGuild, true);
-        addCommandField('=csend <cookie_category> @user', 'Send a cookie/file from a category to a user\'s DMs. (Requires Staff Role)', null, false); // Updated description
-
-        // Permission & Restriction Commands
-        helpEmbed.addFields({ name: '__Permission & Restriction Commands__', value: '\u200b', inline: false });
-        addCommandField('=add <command_name_without_=> @role', 'Restrict a command to a specific role.', PermissionsBitField.Flags.ManageGuild, true);
-        addCommandField('=remove <command_name_without_=>', 'Remove role restriction for a command.', PermissionsBitField.Flags.ManageGuild, true);
-        addCommandField('=restrict <command_name_without_=> <#channel | channel_id>', 'Restrict a command to a specific channel.', PermissionsBitField.Flags.ManageGuild, true);
-        addCommandField('=unrestrict <command_name_without_=>', 'Remove channel restriction for a command.', PermissionsBitField.Flags.ManageGuild, true);
-        addCommandField('=cool <command_name_without_=> <cooldown_in_seconds>', 'Set a cooldown for a command (use 0 to remove).', null, true);
-
-        // Generation & Redemption Commands
-        helpEmbed.addFields({ name: '__Generation & Redemption Commands__', value: '\u200b', inline: false });
-        helpEmbed.addFields({ name: '`=[first_letter_of_category]gen [item_name]`', 'value': 'Dynamically generated commands (e.g., `=fgen` for \'free\' category). Generates a unique code for a stock item from the specified category and sends it to your DMs. You can also request a specific item name.', inline: false });
-        addCommandField('=redeem <hex_code>', 'Redeem a generated code to view its details (Requires Staff Role).');
-
-        // Utility & Admin Commands
-        helpEmbed.addFields({ name: '__Utility & Admin Commands__', value: '\u200b', inline: false });
-        addCommandField('=pls', 'Makes you eligible to receive one vouch/review. (Not allowed in tickets!)');
-        addCommandField('=backup', 'Sends all bot data files to your DMs.', null, true);
-        addCommandField('=timesaved', 'Restores bot data from attached JSON files.', null, true);
-        addCommandField('=debug', 'Displays current internal bot state.', null, true);
-        addCommandField('=check', 'Displays basic bot status and uptime.', null, false);
-
-
-        // Ticket System Commands
-        helpEmbed.addFields({ name: '__Ticket System Commands__', value: '\u200b', inline: false });
-        addCommandField('=ticket [reason]', 'Create a new private support ticket.');
-        addCommandField('=newticket [reason]', 'Alias for =ticket.', null, false);
-        addCommandField('=closeticket', 'Close the current active ticket channel.', PermissionsBitField.Flags.ManageChannels);
-        addCommandField('=setuppanel', 'Set up the interactive ticket creation panel with a button.', null, true); // Only for OWNER_ID
-
-        helpEmbed.setFooter({ text: `Requested by ${message.author.tag}` }).setTimestamp();
-        return message.channel.send({ embeds: [helpEmbed] });
-    }
-    // --- END Help Command ---
-
-
-    // --- Static Command Handling ---
+    // --- Vouch System Commands ---
     if (cmd === '+vouch' || cmd === '-vouch') {
-        const targetUser = message.mentions.users.first();
-        const reason = args.slice(1).join(' '); // Adjusted args.slice for +vouch/-vouch
+        const user = message.mentions.users.first();
+        const reason = args.slice(2).join(' ');
+        const vouchType = cmd === '+vouch' ? 'positive' : 'negative';
 
-        if (!targetUser) {
-            embed.setDescription('Please mention a user. Usage: `+vouch @user <reason>` or `-vouch @user <reason>`').setColor(0xff0000);
-            return message.reply({ embeds: [embed] });
-        }
-        if (targetUser.id === message.author.id) {
-            embed.setDescription('You cannot vouch for yourself.').setColor(0xff0000);
-            return message.reply({ embeds: [embed] });
+        if (!user || !reason) {
+            embed.setTitle('Invalid Usage ❌')
+                 .setDescription(`Usage: \`${cmd} @user <reason>\`\n`);
+            return message.channel.send({ embeds: [embed] });
         }
 
-        // Load vouches inside the command to ensure latest data
-        const currentVouches = loadVouches();
-        if (!currentVouches[targetUser.id]) currentVouches[targetUser.id] = { positive: 0, negative: 0, usersVouched: [], usersNegativeVouched: [] };
-
-        if (cmd === '+vouch') {
-            if (currentVouches[targetUser.id].usersVouched.includes(message.author.id)) {
-                embed.setDescription('You have already positively vouched for this user.').setColor(0xff0000);
-                return message.reply({ embeds: [embed] });
-            }
-            currentVouches[targetUser.id].positive++;
-            currentVouches[targetUser.id].usersVouched.push(message.author.id);
-            embed.setDescription(`Vouch recorded for ${targetUser.tag}! They now have ${currentVouches[targetUser.id].positive} positive vouches.`)
-                 .setColor(0x00ff00);
-        } else { // -vouch
-            if (currentVouches[targetUser.id].usersNegativeVouched.includes(message.author.id)) {
-                 embed.setDescription('You have already negatively vouched for this user.').setColor(0xff0000);
-                 return message.reply({ embeds: [embed] });
-            }
-            currentVouches[targetUser.id].negative++;
-            currentVouches[targetUser.id].usersNegativeVouched.push(message.author.id);
-            embed.setDescription(`Negative vouch recorded for ${targetUser.tag}. They now have ${currentVouches[targetUser.id].negative} negative vouches. Reason: ${reason || 'Not provided'}`)
-                 .setColor(0xff0000);
+        // Check if the user is vouchable via =pls
+        if (!plsRequests[user.id] || plsRequests[user.id].vouchUsed) {
+            embed.setTitle('Cannot Vouch ℹ️')
+                 .setDescription(`First, LET ${user.tag} help u!`);
+            return message.channel.send({ embeds: [embed] });
         }
-        saveVouches(currentVouches);
+
+        // Mark vouch as used for this =pls request
+        plsRequests[user.id].vouchUsed = true;
+
+
+        const vouches = loadVouches();
+        const id = user.id;
+
+        if (!vouches[id]) {
+            vouches[id] = { positiveCount: 0, negativeCount: 0, reasons: [], lastVouched: null };
+        }
+
+        if (vouchType === 'positive') {
+            vouches[id].positiveCount++;
+            embed.setTitle('Vouch Added! ✅')
+                 .setDescription(`Successfully added a positive vouch for **${user.tag}**.`)
+                 .addFields({ name: 'Reason', value: `"${reason}"` });
+        } else {
+            vouches[id].negativeCount++;
+            embed.setTitle('Negative Review Added! ❌')
+                 .setDescription(`A negative review has been added for **${user.tag}**.`)
+                 .addFields({ name: 'Reason', value: `"${reason}"` });
+        }
+
+        vouches[id].reasons.push({
+            by: message.author.tag,
+            type: vouchType,
+            reason,
+            date: new Date().toLocaleString(),
+        });
+        vouches[id].lastVouched = new Date().toLocaleString();
+
+        saveVouches(vouches);
         return message.channel.send({ embeds: [embed] });
     }
 
     if (cmd === '+mvouch') {
-        if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
+        if (!message.member.permissions.has('ManageGuild')) {
             embed.setTitle('Permission Denied 🚫')
                  .setDescription('You need `Manage Server` permission to use this command.');
             return message.channel.send({ embeds: [embed] });
         }
         const user = message.mentions.users.first();
-        const amount = parseInt(args[1]); // Adjusted args index
-        const reason = args.slice(2).join(' ') || 'Manual adjustment by staff';
+        const amount = parseInt(args[2]);
+        const reason = args.slice(3).join(' ') || 'Manual adjustment by staff';
 
         if (!user || isNaN(amount) || amount <= 0) {
             embed.setTitle('Invalid Usage ❌')
@@ -829,16 +812,22 @@ client.on('messageCreate', async message => {
             return message.channel.send({ embeds: [embed] });
         }
 
-        const currentVouches = loadVouches();
+        const vouches = loadVouches();
         const id = user.id;
 
-        if (!currentVouches[id]) {
-            currentVouches[id] = { positive: 0, negative: 0, usersVouched: [], usersNegativeVouched: [] };
+        if (!vouches[id]) {
+            vouches[id] = { positiveCount: 0, negativeCount: 0, reasons: [], lastVouched: null };
         }
 
-        currentVouches[id].positive += amount;
-        // No need to track individual users for manual vouches unless specifically requested
-        saveVouches(currentVouches);
+        vouches[id].positiveCount += amount;
+        vouches[id].reasons.push({
+            by: message.author.tag,
+            type: 'manual_positive',
+            reason: `${amount} vouches added: "${reason}"`,
+            date: new Date().toLocaleString(),
+        });
+        vouches[id].lastVouched = new Date().toLocaleString();
+        saveVouches(vouches);
 
         embed.setTitle('Vouches Manually Added! ✅')
              .setDescription(`Successfully added **${amount}** positive vouches for **${user.tag}**.`)
@@ -847,14 +836,14 @@ client.on('messageCreate', async message => {
     }
 
     if (cmd === '-mvouch') {
-        if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
+        if (!message.member.permissions.has('ManageGuild')) {
             embed.setTitle('Permission Denied 🚫')
                  .setDescription('You need `Manage Server` permission to use this command.');
             return message.channel.send({ embeds: [embed] });
         }
         const user = message.mentions.users.first();
-        const amount = parseInt(args[1]); // Adjusted args index
-        const reason = args.slice(2).join(' ') || 'Manual adjustment by staff';
+        const amount = parseInt(args[2]);
+        const reason = args.slice(3).join(' ') || 'Manual adjustment by staff';
 
         if (!user || isNaN(amount) || amount <= 0) {
             embed.setTitle('Invalid Usage ❌')
@@ -862,15 +851,25 @@ client.on('messageCreate', async message => {
             return message.channel.send({ embeds: [embed] });
         }
 
-        const currentVouches = loadVouches();
+        const vouches = loadVouches();
         const id = user.id;
 
-        if (!currentVouches[id]) {
-            currentVouches[id] = { positive: 0, negative: 0, usersVouched: [], usersNegativeVouched: [] };
+        if (!vouches[id]) {
+            vouches[id] = { positiveCount: 0, negativeCount: 0, reasons: [], lastVouched: null };
         }
 
-        currentVouches[id].negative += amount;
-        saveVouches(currentVouches);
+        vouches[id].negativeCount += amount;
+        // If the intent was to reduce positive vouches, that logic needs to be added.
+        // Keeping it simple as per original code: "-mvouches @user to remove the vouches" -> implies adding negative.
+
+        vouches[id].reasons.push({
+            by: message.author.tag,
+            type: 'manual_negative',
+            reason: `${amount} vouches removed: "${reason}"`,
+            date: new Date().toLocaleString(),
+        });
+        vouches[id].lastVouched = new Date().toLocaleString();
+        saveVouches(vouches);
 
         embed.setTitle('Vouches Manually Removed! ✅')
              .setDescription(`Successfully added **${amount}** negative vouches (effectively removed) for **${user.tag}**.`)
@@ -880,16 +879,76 @@ client.on('messageCreate', async message => {
 
     if (cmd === '=profile') {
         const user = message.mentions.users.first() || message.author;
-        return sendProfileEmbed(message.channel, user); // Use the reusable function
+        const vouches = loadVouches();
+        const data = vouches[user.id];
+
+        if (!data) {
+            embed.setTitle('Profile Not Found ℹ️')
+                 .setDescription(`${user.tag} has not received any vouches or reviews yet.`);
+            return message.channel.send({ embeds: [embed] });
+        }
+
+        embed.setColor(0x2ecc71)
+             .setTitle(`${user.tag}'s Vouch & Review Profile`)
+             .setThumbnail(user.displayAvatarURL())
+             .addFields(
+                 { name: '✅ Positive Reviews', value: `${data.positiveCount || 0}`, inline: true },
+                 { name: '❌ Negative Reviews', value: `${data.negativeCount || 0}`, inline: true },
+                 { name: 'Last Reviewed On', value: `${data.lastVouched || 'N/A'}`, inline: false }
+             );
+
+        // Filter for regular and manual vouches/reviews
+        const regularPositiveReasons = data.reasons.filter(r => r.type === 'positive');
+        const regularNegativeReasons = data.reasons.filter(r => r.type === 'negative');
+        const manualPositiveReasons = data.reasons.filter(r => r.type === 'manual_positive');
+        const manualNegativeReasons = data.reasons.filter(r => r.type === 'manual_negative');
+
+        // Combine all positive and negative reasons for display
+        const allPositiveReasons = [...regularPositiveReasons, ...manualPositiveReasons];
+        const allNegativeReasons = [...regularNegativeReasons, ...manualNegativeReasons];
+
+        if (allPositiveReasons.length > 0) {
+            embed.addFields({
+                name: 'Recent Positive Reviews',
+                value: allPositiveReasons
+                    .slice(-3)
+                    .reverse()
+                    .map((r, i) => `**${allPositiveReasons.length - i}.** By: ${r.by}\nReason: *"${r.reason}"*\nDate: (${r.date})`)
+                    .join('\n\n') || 'No recent positive reviews.',
+                inline: false
+            });
+        }
+
+        if (allNegativeReasons.length > 0) {
+            embed.addFields({
+                name: 'Recent Negative Reviews',
+                value: allNegativeReasons
+                    .slice(-3)
+                    .reverse()
+                    .map((r, i) => `**${allNegativeReasons.length - i}.** By: ${r.by}\nReason: *"${r.reason}"*\nDate: (${r.date})`)
+                    .join('\n\n') || 'No recent negative reviews.',
+                inline: false
+            });
+        }
+
+        if (allPositiveReasons.length === 0 && allNegativeReasons.length === 0) {
+            embed.addFields({ name: 'Recent Reviews', value: 'No recent reviews.', inline: false });
+        }
+
+        embed.setFooter({ text: `User ID: ${user.id}` })
+             .setTimestamp();
+
+        return message.channel.send({ embeds: [embed] });
     }
 
+    // --- Stock Management Commands ---
     if (cmd === '=addcategory') {
-        if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
+        if (!message.member.permissions.has('ManageGuild')) {
             embed.setTitle('Permission Denied 🚫')
                  .setDescription('You need `Manage Server` permission to use this command.');
             return message.channel.send({ embeds: [embed] });
         }
-        const name = args[0]?.toLowerCase(); // Adjusted args index
+        const name = args[1]?.toLowerCase();
         if (!name) {
             embed.setTitle('Invalid Usage ❌')
                  .setDescription('Please provide a category name. Usage: `=addcategory <name>`');
@@ -902,7 +961,7 @@ client.on('messageCreate', async message => {
         }
         stock[name] = [];
         updateDynamicCommandMap(); // Update map after adding category
-        saveData();
+        saveBotData();
         embed.setTitle('Category Created! ✅')
              .setDescription(`Category \`${name}\` has been created.`)
              .addFields({ name: 'Generated Command', value: `\`=${name[0]}gen\` is now active for this category.` });
@@ -910,13 +969,13 @@ client.on('messageCreate', async message => {
     }
 
     if (cmd === '=categoryremove') {
-        if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
+        if (!message.member.permissions.has('ManageGuild')) {
             embed.setTitle('Permission Denied 🚫')
                  .setDescription('You need `Manage Server` permission to use this command.');
             return message.channel.send({ embeds: [embed] });
         }
 
-        const category = args[0]?.toLowerCase(); // Adjusted args index
+        const category = args[1]?.toLowerCase();
         if (!category) {
             embed.setTitle('Invalid Usage ❌')
                  .setDescription('Usage: `=categoryremove <category>`');
@@ -937,7 +996,7 @@ client.on('messageCreate', async message => {
             delete cooldowns[`${category[0]}gen`];
         }
         updateDynamicCommandMap(); // Update map after category removal
-        saveData();
+        saveBotData();
 
         embed.setTitle('Category Removed! ✅')
              .setDescription(`Category \`${category}\` and associated dynamic command \`=${category[0]}gen\` (and its restrictions) have been removed.`);
@@ -945,13 +1004,13 @@ client.on('messageCreate', async message => {
     }
 
     if (cmd === '=addstock') {
-        if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
+        if (!message.member.permissions.has('ManageGuild')) {
             embed.setTitle('Permission Denied 🚫')
                  .setDescription('You need `Manage Server` permission to use this command.');
             return message.channel.send({ embeds: [embed] });
         }
-        const category = args[0]?.toLowerCase(); // Adjusted args index
-        const stockItem = args.slice(1).join(' '); // Adjusted args index
+        const category = args[1]?.toLowerCase();
+        const stockItem = args.slice(2).join(' ');
         if (!category || !stockItem) {
             embed.setTitle('Invalid Usage ❌')
                  .setDescription('Usage: `=addstock <category> <stock_name>`');
@@ -963,20 +1022,20 @@ client.on('messageCreate', async message => {
             return message.channel.send({ embeds: [embed] });
         }
         stock[category].push(stockItem);
-        saveData();
+        saveBotData();
         embed.setTitle('Stock Added! ✅')
              .setDescription(`Stock item \`${stockItem}\` has been added to the **${category}** category.`);
         return message.channel.send({ embeds: [embed] });
     }
 
     if (cmd === '=removestock') {
-        if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
+        if (!message.member.permissions.has('ManageGuild')) {
             embed.setTitle('Permission Denied 🚫')
                  .setDescription('You need `Manage Server` permission to use this command.');
             return message.channel.send({ embeds: [embed] });
         }
-        const category = args[0]?.toLowerCase(); // Adjusted args index
-        const stockName = args.slice(1).join(' '); // Adjusted args index
+        const category = args[1]?.toLowerCase();
+        const stockName = args.slice(2).join(' ');
         if (!category || !stockName) {
             embed.setTitle('Invalid Usage ❌')
                  .setDescription('Usage: `=removestock <category> <stock_name>`');
@@ -992,7 +1051,7 @@ client.on('messageCreate', async message => {
         stock[category] = stock[category].filter(item => item.toLowerCase() !== stockName.toLowerCase());
 
         if (stock[category].length < initialLength) {
-            saveData();
+            saveBotData();
             embed.setTitle('Stock Removed! ✅')
                  .setDescription(`Removed all instances of \`${stockName}\` from **${category}** stock.`);
             return message.channel.send({ embeds: [embed] });
@@ -1004,12 +1063,12 @@ client.on('messageCreate', async message => {
     }
 
     if (cmd === '=add') {
-        if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
+        if (!message.member.permissions.has('ManageGuild')) {
             embed.setTitle('Permission Denied 🚫')
                  .setDescription('You need `Manage Server` permission to use this command.');
             return message.channel.send({ embeds: [embed] });
         }
-        const commandToRestrict = args[0]?.toLowerCase(); // Adjusted args index
+        const commandToRestrict = args[1]?.toLowerCase();
         const role = message.mentions.roles.first();
 
         if (!commandToRestrict || !role) {
@@ -1026,19 +1085,19 @@ client.on('messageCreate', async message => {
         }
 
         rolesAllowed[commandToRestrict] = role.id;
-        saveData();
+        saveBotData();
         embed.setTitle('Permission Granted! ✅')
              .setDescription(`The role **${role.name}** can now use the command \`=${commandToRestrict}\`.`);
         return message.channel.send({ embeds: [embed] });
     }
 
     if (cmd === '=remove') {
-        if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
+        if (!message.member.permissions.has('ManageGuild')) {
             embed.setTitle('Permission Denied 🚫')
                  .setDescription('You need `Manage Server` permission to use this command.');
             return message.channel.send({ embeds: [embed] });
         }
-        const commandToRemoveRestriction = args[0]?.toLowerCase(); // Adjusted args index
+        const commandToRemoveRestriction = args[1]?.toLowerCase();
         if (!commandToRemoveRestriction) {
             embed.setTitle('Invalid Usage ❌')
                  .setDescription('Usage: `=remove <command_name_without_=>`');
@@ -1047,7 +1106,7 @@ client.on('messageCreate', async message => {
 
         if (rolesAllowed[commandToRemoveRestriction]) {
             delete rolesAllowed[commandToRemoveRestriction];
-            saveData();
+            saveBotData();
             embed.setTitle('Permission Removed! ✅')
                  .setDescription(`Role restriction for command \`=${commandToRemoveRestriction}\` has been removed.`);
             return message.channel.send({ embeds: [embed] });
@@ -1059,14 +1118,14 @@ client.on('messageCreate', async message => {
     }
 
     if (cmd === '=restrict') {
-        if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
+        if (!message.member.permissions.has('ManageGuild')) {
             embed.setTitle('Permission Denied 🚫')
                  .setDescription('You need `Manage Server` permission to use this command.');
             return message.channel.send({ embeds: [embed] });
         }
 
-        const commandToRestrict = args[0]?.toLowerCase(); // Adjusted args index
-        const targetChannel = message.mentions.channels.first() || message.guild.channels.cache.get(args[1]); // Adjusted args index
+        const commandToRestrict = args[1]?.toLowerCase();
+        const targetChannel = message.mentions.channels.first() || message.guild.channels.cache.get(args[2]);
 
         if (!commandToRestrict || !targetChannel || targetChannel.type !== ChannelType.GuildText) {
             embed.setTitle('Invalid Usage ❌')
@@ -1082,19 +1141,19 @@ client.on('messageCreate', async message => {
         }
 
         channelRestrictions[commandToRestrict] = targetChannel.id;
-        saveData();
+        saveBotData();
         embed.setTitle('Command Restricted! ✅')
              .setDescription(`The command \`=${commandToRestrict}\` can now only be used in <#${targetChannel.id}>.`);
         return message.channel.send({ embeds: [embed] });
     }
 
     if (cmd === '=unrestrict') {
-        if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
+        if (!message.member.permissions.has('ManageGuild')) {
             embed.setTitle('Permission Denied 🚫')
                  .setDescription('You need `Manage Server` permission to use this command.');
             return message.channel.send({ embeds: [embed] });
         }
-        const commandToUnrestrict = args[0]?.toLowerCase(); // Adjusted args index
+        const commandToUnrestrict = args[1]?.toLowerCase();
         if (!commandToUnrestrict) {
             embed.setTitle('Invalid Usage ❌')
                  .setDescription('Usage: `=unrestrict <command_name_without_=>`');
@@ -1103,7 +1162,7 @@ client.on('messageCreate', async message => {
 
         if (channelRestrictions[commandToUnrestrict]) {
             delete channelRestrictions[commandToUnrestrict];
-            saveData();
+            saveBotData();
             embed.setTitle('Command Unrestricted! ✅')
                  .setDescription(`Channel restriction for command \`=${commandToUnrestrict}\` has been removed.`);
             return message.channel.send({ embeds: [embed] });
@@ -1114,6 +1173,7 @@ client.on('messageCreate', async message => {
         }
     }
 
+    // NEW: =cool command
     if (cmd === '=cool') {
         if (!isAuthorized(message.author.id)) {
             embed.setTitle('Authorization Required 🚫')
@@ -1121,8 +1181,8 @@ client.on('messageCreate', async message => {
             return message.channel.send({ embeds: [embed] });
         }
 
-        const commandToCool = args[0]?.toLowerCase(); // Adjusted args index
-        const cooldownTimeSeconds = parseInt(args[1]); // Adjusted args index
+        const commandToCool = args[1]?.toLowerCase();
+        const cooldownTimeSeconds = parseInt(args[2]);
 
         if (!commandToCool || isNaN(cooldownTimeSeconds) || cooldownTimeSeconds < 0) {
             embed.setTitle('Invalid Usage ❌')
@@ -1130,6 +1190,7 @@ client.on('messageCreate', async message => {
             return message.channel.send({ embeds: [embed] });
         }
 
+        // Validate if it's a known command (static or dynamic)
         if (!ALL_STATIC_COMMAND_NAMES.has(commandToCool) && !dynamicCommandMap.hasOwnProperty(commandToCool)) {
             embed.setTitle('Invalid Command ⚠️')
                  .setDescription(`Command \`=${commandToCool}\` is not a recognized command.`);
@@ -1149,7 +1210,7 @@ client.on('messageCreate', async message => {
         } else {
             cooldowns[commandToCool] = {
                 duration: cooldownTimeSeconds,
-                lastUsed: cooldowns[commandToCool]?.lastUsed || {}
+                lastUsed: cooldowns[commandToCool]?.lastUsed || {} // Preserve lastUsed if it exists
             };
             saveCooldowns(cooldowns);
             embed.setTitle('Cooldown Set! ✅')
@@ -1159,9 +1220,48 @@ client.on('messageCreate', async message => {
     }
 
 
-    // --- SWAPPED COMMANDS: =stock and =stockoverview ---
-    // The old =stockall is now =stock
-    if (cmd === '=stock') { // This was previously =stockall
+    if (cmd === '=stock') {
+        const allCategories = Object.keys(stock);
+        if (allCategories.length === 0) {
+            embed.setTitle('No Stock 📦')
+                 .setDescription('No stock categories have been added yet.')
+                 .setColor(0x0099ff);
+            return message.channel.send({ embeds: [embed] });
+        }
+
+        const cat = args[1]?.toLowerCase();
+        if (cat) {
+            if (stock[cat]) {
+                const categoryItems = stock[cat];
+                embed.setTitle(`📦 Stock for **${cat.toUpperCase()}** (${categoryItems.length} items)`)
+                     .setDescription(categoryItems.length > 0 ? categoryItems.map(item => `\`${item}\``).join(', ') : 'This category is empty.')
+                     .setColor(0x0099ff);
+                return message.channel.send({ embeds: [embed] });
+            } else {
+                embed.setTitle('Category Not Found ❌')
+                     .setDescription(`The category \`${cat}\` does not exist.`)
+                     .setColor(0xe74c3c);
+                return message.channel.send({ embeds: [embed] });
+            }
+        }
+
+        const replyEmbed = new EmbedBuilder()
+            .setTitle('📦 Current Stock Overview')
+            .setColor(0x2c3e50);
+
+        const sortedCategories = allCategories.sort();
+
+        for (const category of sortedCategories) {
+            const items = stock[category];
+            const stockCount = items.length;
+            const fieldValue = stockCount > 0 ? `**${stockCount}** items` : '*Empty*';
+            replyEmbed.addFields({ name: category.toUpperCase(), value: fieldValue, inline: true });
+        }
+
+        return message.channel.send({ embeds: [replyEmbed] });
+    }
+
+    if (cmd === '=stockall') {
         const allCategories = Object.keys(stock);
         if (allCategories.length === 0) {
             embed.setTitle('No Stock 📦')
@@ -1223,50 +1323,6 @@ client.on('messageCreate', async message => {
         return;
     }
 
-    // The old =stock is now =stockoverview
-    if (cmd === '=stockoverview') { // This was previously =stock
-        const allCategories = Object.keys(stock);
-        if (allCategories.length === 0) {
-            embed.setTitle('No Stock 📦')
-                 .setDescription('No stock categories have been added yet.')
-                 .setColor(0x0099ff);
-            return message.channel.send({ embeds: [embed] });
-        }
-
-        const cat = args[0]?.toLowerCase(); // Adjusted args index
-        if (cat) {
-            if (stock[cat]) {
-                const categoryItems = stock[cat];
-                embed.setTitle(`📦 Stock for **${cat.toUpperCase()}** (${categoryItems.length} items)`)
-                     .setDescription(categoryItems.length > 0 ? categoryItems.map(item => `\`${item}\``).join(', ') : 'This category is empty.')
-                     .setColor(0x0099ff);
-                return message.channel.send({ embeds: [embed] });
-            } else {
-                embed.setTitle('Category Not Found ❌')
-                     .setDescription(`The category \`${cat}\` does not exist.`)
-                     .setColor(0xe74c3c);
-                return message.channel.send({ embeds: [embed] });
-            }
-        }
-
-        const replyEmbed = new EmbedBuilder()
-            .setTitle('📦 Current Stock Overview')
-            .setColor(0x2c3e50);
-
-        const sortedCategories = allCategories.sort();
-
-        for (const category of sortedCategories) {
-            const items = stock[category];
-            const stockCount = items.length;
-            const fieldValue = stockCount > 0 ? `**${stockCount}** items` : '*Empty*';
-            replyEmbed.addFields({ name: category.toUpperCase(), value: fieldValue, inline: true });
-        }
-
-        return message.channel.send({ embeds: [replyEmbed] });
-    }
-    // --- END SWAPPED COMMANDS ---
-
-
     if (cmd === '=cstock') {
         updateFileStock();
         embed.setTitle('🍪 Cookie Stock Overview')
@@ -1294,7 +1350,7 @@ client.on('messageCreate', async message => {
             return message.channel.send({ embeds: [embed] });
         }
 
-        const category = args[0]?.toLowerCase(); // Adjusted args index
+        const category = args[1]?.toLowerCase();
         if (!category) {
             embed.setTitle('Invalid Usage ❌')
                  .setDescription('Usage: `=upload <cookie_category>` with a ZIP file.');
@@ -1351,14 +1407,14 @@ client.on('messageCreate', async message => {
         }
     }
 
-    if (cmd === '=cremove') {
-        if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
+    if (cmd === '=cremove') { // MODIFIED COMMAND: =cremove to remove a whole category and send as zip
+        if (!message.member.permissions.has('ManageGuild')) {
             embed.setTitle('Permission Denied 🚫')
                  .setDescription('You need `Manage Server` permission to use this command.');
             return message.channel.send({ embeds: [embed] });
         }
 
-        const category = args[0]?.toLowerCase(); // Adjusted args index
+        const category = args[1]?.toLowerCase();
 
         if (!category) {
             embed.setTitle('Invalid Usage ❌')
@@ -1387,23 +1443,26 @@ client.on('messageCreate', async message => {
             const zipFileName = `${category}_cookies_${Date.now()}.zip`;
             const tempZipPath = path.join('./', zipFileName);
 
+            // Add all files from the category to the zip
             filesInCategories.forEach(file => {
                 const filePath = path.join(categoryPath, file);
-                zip.addLocalFile(filePath, category);
+                zip.addLocalFile(filePath, category); // Add to a folder named 'category' inside the zip
             });
 
             zip.writeZip(tempZipPath);
 
+            // Send the ZIP to the user's DM
             const attachment = new AttachmentBuilder(tempZipPath, { name: zipFileName });
             await message.author.send({
                 content: `Here are all the cookie files from the removed category \`${category}\`:`,
                 files: [attachment]
             });
 
+            // Delete the original category directory and its contents
             fs.rmSync(categoryPath, { recursive: true, force: true });
-            fs.unlinkSync(tempZipPath);
+            fs.unlinkSync(tempZipPath); // Clean up temp zip file
 
-            updateFileStock();
+            updateFileStock(); // Update stock after removal
 
             embed.setTitle('Category Removed and Sent! ✅')
                  .setDescription(`All files from category \`${category}\` have been removed and sent to your DMs in a ZIP file.`);
@@ -1419,14 +1478,13 @@ client.on('messageCreate', async message => {
 
 
     if (cmd === '=csend') {
-        // Role permission check for =csend
-        if (!message.member.roles.cache.has(STAFF_ROLE_ID)) {
+        if (!message.member.permissions.has('ManageGuild')) {
             embed.setTitle('Permission Denied 🚫')
-                 .setDescription(`You need the role <@&${STAFF_ROLE_ID}> to use this command.`);
+                 .setDescription('You need `Manage Server` permission to use this command.');
             return message.channel.send({ embeds: [embed] });
         }
 
-        const category = args[0]?.toLowerCase(); // Adjusted args index
+        const category = args[1]?.toLowerCase();
         const user = message.mentions.users.first();
         if (!category || !user) {
             embed.setTitle('Invalid Usage ❌')
@@ -1469,14 +1527,15 @@ client.on('messageCreate', async message => {
         }
     }
 
-    if (cmd === '=redeem') {
-        if (!message.member.roles.cache.has(STAFF_ROLE_ID)) { // Changed to STAFF_ROLE_ID
+    if (cmd === '=redeem') { // MODIFIED: Only allows redemption by hex code and by specific role
+        // NEW: Role permission check for =redeem
+        if (!message.member.roles.cache.has(REDEEM_ALLOWED_ROLE_ID)) {
             embed.setTitle('Permission Denied 🚫')
-                 .setDescription(`You need the role <@&${STAFF_ROLE_ID}> to use this command.`);
+                 .setDescription(`You need the role <@&${REDEEM_ALLOWED_ROLE_ID}> to use this command.`);
             return message.channel.send({ embeds: [embed] });
         }
 
-        const code = args[0]?.toUpperCase(); // Adjusted args index
+        const code = args[1]?.toUpperCase();
         if (!code) {
             embed.setTitle('Invalid Usage ❌')
                  .setDescription('Usage: `=redeem <hex_code>`');
@@ -1490,7 +1549,7 @@ client.on('messageCreate', async message => {
                      .setDescription(`The code \`${code}\` has already been redeemed.`);
                 return message.channel.send({ embeds: [embed] });
             }
-            codeData.redeemed = true;
+            codeData.redeemed = true; // Mark as redeemed
 
             embed.setTitle('Code Redeemed! ✅')
                  .setDescription(`You have successfully redeemed code: \`${code}\`\n\nThis code was generated for a **${codeData.category.toUpperCase()}** item: \`${codeData.stockName}\`.`)
@@ -1508,11 +1567,32 @@ client.on('messageCreate', async message => {
     }
 
     if (cmd === '=pls') {
+        // NEW: Set the user as vouchable for one vouch
+        // Clear any previous state for this user to allow a new vouch
         plsRequests[message.author.id] = { timestamp: Date.now(), vouchUsed: false };
 
-        embed.setTitle('Cheers for our staff! 🎉')
-             .setDescription(`Show appreciation with \`+vouch @user\` in <#${VOUCH_CHANNEL_ID}>.\nNot happy? Use \`-vouch @user <reason>\`.\n\n**You are now eligible to receive ONE vouch/review.**`);
-        return message.channel.send({ embeds: [embed] });
+        // NEW: Schedule ticket deletion after 6 hours if =pls is used in a ticket
+        if (message.channel.type === ChannelType.GuildText && activeTickets[message.channel.id]) {
+            const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
+            const deletionTimestamp = Date.now() + SIX_HOURS_MS;
+
+            activeTickets[message.channel.id].scheduledDeletionTimestamp = deletionTimestamp;
+            saveTicketsData(); // Persist the scheduled deletion timestamp
+
+            // Schedule the actual deletion
+            scheduleTicketDeletion(message.channel.id, SIX_HOURS_MS);
+
+            embed.setTitle('Ticket Scheduled for Deletion ⏳')
+                 .setDescription(`The \`=pls\` command was used in this ticket. This ticket will be automatically closed and deleted in **6 hours**.\n\nIf you wish to close it sooner, use the \`=closeticket\` command or the "Close Ticket" button.`);
+            await message.channel.send({ embeds: [embed] });
+            // Do NOT delete the message or channel immediately
+        } else {
+            // Original =pls behavior if not in a ticket
+            embed.setTitle('Cheers for our staff! 🎉')
+                 .setDescription(`Show appreciation with \`+vouch @user\` in <#${VOUCH_CHANNEL_ID}>.\nNot happy? Use \`-vouch @user <reason>\`.\n\n**You are now eligible to receive ONE vouch/review.**`);
+            await message.channel.send({ embeds: [embed] });
+        }
+        return; // Prevent further processing
     }
 
     if (cmd === '=backup') {
@@ -1528,15 +1608,23 @@ client.on('messageCreate', async message => {
             const rolesAttachment = new AttachmentBuilder(ROLES_PATH, { name: 'roles.json' });
             const redeemedAttachment = new AttachmentBuilder(REDEEMED_PATH, { name: 'redeemed.json' });
             const channelRestrictionsAttachment = new AttachmentBuilder(CHANNEL_RESTRICTIONS_PATH, { name: 'channelRestrictions.json' });
-            const cooldownsAttachment = new AttachmentBuilder(COOLDOWN_PATH, { name: 'cooldowns.json' });
-            const ticketsAttachment = new AttachmentBuilder(TICKETS_DATA_PATH, { name: 'tickets.json' });
+            const cooldownsAttachment = new AttachmentBuilder(COOLDOWN_PATH, { name: 'cooldowns.json' }); // NEW: Cooldowns backup
+
+            // Also include ticket data in backup
+            const ticketsBackupContent = JSON.stringify({ activeTickets, ticketPanelInfo }, null, 2);
+            const ticketsAttachment = new AttachmentBuilder(Buffer.from(ticketsBackupContent, 'utf-8'), { name: 'tickets_backup.json' });
+
 
             await message.author.send({
                 content: 'Here are your backup files:',
-                files: [vouchesAttachment, stockAttachment, rolesAttachment, redeemedAttachment, channelRestrictionsAttachment, cooldownsAttachment, ticketsAttachment]
+                files: [
+                    vouchesAttachment, stockAttachment, rolesAttachment,
+                    redeemedAttachment, channelRestrictionsAttachment, cooldownsAttachment,
+                    ticketsAttachment // Add ticket data backup
+                ]
             });
             embed.setTitle('Backup Sent! ✅')
-                 .setDescription('Your bot data files have been sent to your DMs (`vouches.json`, `stock.json`, `roles.json`, `redeemed.json`, `channelRestrictions.json`, `cooldowns.json`, `tickets.json`).');
+                 .setDescription('Your bot data files have been sent to your DMs (`vouches.json`, `stock.json`, `roles.json`, `redeemed.json`, `channelRestrictions.json`, `cooldowns.json`, `tickets_backup.json`).');
             return message.channel.send({ embeds: [embed] });
         } catch (dmError) {
             console.error(`Could not DM user ${message.author.tag} for backup:`, dmError);
@@ -1546,6 +1634,7 @@ client.on('messageCreate', async message => {
         }
     }
 
+    // NEW CONSOLIDATED COMMAND: =timesaved
     if (cmd === '=timesaved') {
         if (!isAuthorized(message.author.id)) {
             embed.setTitle('Authorization Required 🚫')
@@ -1556,13 +1645,14 @@ client.on('messageCreate', async message => {
         const attachments = message.attachments;
         if (attachments.size === 0) {
             embed.setTitle('Invalid Usage ❌')
-                 .setDescription('Please attach one or more JSON files to restore data. Accepted files: `vouches.json`, `stock.json`, `roles.json`, `redeemed.json`, `channelRestrictions.json`, `cooldowns.json`, `tickets.json`.');
+                 .setDescription('Please attach one or more JSON files to restore data. Accepted files: `vouches.json`, `stock.json`, `roles.json`, `redeemed.json`, `channelRestrictions.json`, `cooldowns.json`, `tickets_backup.json`.');
             return message.channel.send({ embeds: [embed] });
         }
 
         const allowedFileNames = [
             'vouches.json', 'stock.json', 'roles.json',
-            'redeemed.json', 'channelRestrictions.json', 'cooldowns.json', 'tickets.json'
+            'redeemed.json', 'channelRestrictions.json', 'cooldowns.json',
+            'tickets_backup.json' // Added for ticket data restore
         ];
         let restoredFiles = [];
         let errorMessages = [];
@@ -1572,7 +1662,7 @@ client.on('messageCreate', async message => {
                 errorMessages.push(`Skipping invalid file: \`${attachment.name}\`. Only allowed JSON files can be restored.`);
                 continue;
             }
-            if (attachment.size > 1024 * 1024 * 5) {
+            if (attachment.size > 1024 * 1024 * 5) { // 5MB limit for each file
                 errorMessages.push(`Skipping \`${attachment.name}\` - file too large (Max 5MB).`);
                 continue;
             }
@@ -1588,34 +1678,37 @@ client.on('messageCreate', async message => {
 
                 switch (attachment.name) {
                     case 'vouches.json':
-                        vouches = newData;
                         saveVouches(newData);
                         break;
                     case 'stock.json':
                         stock = newData;
-                        saveJSON(STOCK_PATH, stock);
-                        updateDynamicCommandMap();
+                        saveBotData(); // Saves all data including stock
+                        updateDynamicCommandMap(); // Re-populate dynamic commands based on new stock
                         break;
                     case 'roles.json':
                         rolesAllowed = newData;
-                        saveJSON(ROLES_PATH, rolesAllowed);
+                        saveBotData();
                         break;
                     case 'redeemed.json':
                         redeemed = newData;
-                        saveJSON(REDEEMED_PATH, redeemed);
+                        saveBotData();
                         break;
                     case 'channelRestrictions.json':
                         channelRestrictions = newData;
-                        saveJSON(CHANNEL_RESTRICTIONS_PATH, channelRestrictions);
+                        saveBotData();
                         break;
                     case 'cooldowns.json':
                         cooldowns = newData;
-                        saveJSON(COOLDOWN_PATH, cooldowns);
+                        saveBotData();
                         break;
-                    case 'tickets.json':
-                        activeTickets = newData.activeTickets || {};
-                        ticketPanelInfo = newData.ticketPanelInfo || { channelId: null, messageId: null };
-                        saveTicketsData();
+                    case 'tickets_backup.json': // Handle ticket data restore
+                        if (newData.activeTickets && newData.ticketPanelInfo) {
+                            activeTickets = newData.activeTickets;
+                            ticketPanelInfo = newData.ticketPanelInfo;
+                            saveTicketsData();
+                        } else {
+                            throw new Error('Invalid ticket backup structure.');
+                        }
                         break;
                 }
                 restoredFiles.push(attachment.name);
@@ -1657,8 +1750,9 @@ client.on('messageCreate', async message => {
         const channelRestrictionsStr = JSON.stringify(channelRestrictions, null, 2);
         const plsRequestsStr = JSON.stringify(plsRequests, null, 2);
         const cooldownsStr = JSON.stringify(cooldowns, null, 2);
-        const activeTicketsStr = JSON.stringify(activeTickets, null, 2);
-        const ticketPanelInfoStr = JSON.stringify(ticketPanelInfo, null, 2);
+        const activeTicketsStr = JSON.stringify(activeTickets, null, 2); // Add ticket data to debug
+        const ticketPanelInfoStr = JSON.stringify(ticketPanelInfo, null, 2); // Add ticket panel info to debug
+
 
         const splitStringForEmbed = (str, fieldName) => {
             const maxLen = 1000;
@@ -1675,327 +1769,267 @@ client.on('messageCreate', async message => {
 
         debugEmbed.addFields(...splitStringForEmbed(rolesAllowedStr, 'Roles Allowed'));
         debugEmbed.addFields(...splitStringForEmbed(stockStr, 'Stock Data'));
-        debugEmbed.addFields(...splitStringForEmbed(redeemedStr, 'Manually Redeemed'));
+        debugEmbed.addFields(...splitStringForEmbed(redeemedStr, 'Manually Redeemed (Legacy)')); // Clarify this is for manual redemption
         debugEmbed.addFields(...splitStringForEmbed(generatedCodesStr, 'Generated Codes (in-memory)'));
-        debugEmbed.addFields(...splitStringForEmbed(fileStockStr, 'File Stock'));
+        debugEmbed.addFields(...splitStringForEmbed(fileStockStr, 'File Stock (Cookies)'));
         debugEmbed.addFields(...splitStringForEmbed(channelRestrictionsStr, 'Channel Restrictions'));
         debugEmbed.addFields(...splitStringForEmbed(plsRequestsStr, 'PLS Requests (in-memory)'));
         debugEmbed.addFields(...splitStringForEmbed(cooldownsStr, 'Cooldowns'));
-        debugEmbed.addFields(...splitStringForEmbed(activeTicketsStr, 'Active Tickets'));
-        debugEmbed.addFields(...splitStringForEmbed(ticketPanelInfoStr, 'Ticket Panel Info'));
+        debugEmbed.addFields(...splitStringForEmbed(activeTicketsStr, 'Active Tickets')); // Add ticket data to debug
+        debugEmbed.addFields(...splitStringForEmbed(ticketPanelInfoStr, 'Ticket Panel Info')); // Add ticket panel info to debug
+
 
         return message.channel.send({ embeds: [debugEmbed] });
     }
 });
 
-// === Interaction Listener for Buttons ===
+
+// === Interaction Handler (for buttons) ===
 client.on('interactionCreate', async interaction => {
     if (!interaction.isButton()) return;
 
-    // Defer the reply to prevent "This interaction failed" error
-    await interaction.deferReply({ ephemeral: true });
+    const { customId, channel, member, guild, message } = interaction;
+    const embed = new EmbedBuilder().setColor(0x3498db); // Default embed color for interactions
 
-    if (!interaction.guild) {
-        return interaction.editReply({ content: 'This action can only be performed in a server channel.', ephemeral: true });
+    if (customId === 'open_ticket') {
+        await interaction.deferReply({ ephemeral: true }); // Acknowledge the interaction
+        const result = await createTicketChannel(member, guild);
+        return interaction.followUp({ embeds: [result.embed], ephemeral: true });
     }
 
-    const ticketChannel = interaction.channel;
-    const ticketInfo = activeTickets[ticketChannel.id];
-    const isStaff = interaction.member.roles.cache.has(STAFF_ROLE_ID) || interaction.user.id === OWNER_ID;
+    if (customId === 'close_ticket') {
+        await interaction.deferReply({ ephemeral: true });
+        const channelIdToClose = channel.id;
+        const ticketData = activeTickets[channelIdToClose];
 
-    // --- Open Ticket Logic ---
-    if (interaction.customId === 'open_ticket') {
-        const result = await createTicketChannel(interaction.member, interaction.guild, 'Opened via ticket panel');
-        await interaction.editReply({ embeds: [result.embed], ephemeral: true });
-    }
-
-    // --- Close Ticket Logic ---
-    else if (interaction.customId === 'close_ticket') {
-        if (!ticketInfo) {
-            return interaction.editReply({ content: 'This does not appear to be an active ticket channel.', ephemeral: true });
+        if (!ticketData) {
+            embed.setTitle('Not a Ticket Channel ℹ️')
+                 .setDescription('This button can only be used in an active ticket channel.');
+            return interaction.followUp({ embeds: [embed], ephemeral: true });
         }
 
-        const isOpener = interaction.user.id === ticketInfo.userId;
-        if (!isOpener && !isStaff) {
-            return interaction.editReply({ content: 'Only the ticket opener, bot owner, or support staff can close this ticket.', ephemeral: true });
+        const isAuthorizedToClose = interaction.user.id === ticketData.userId || member.permissions.has(PermissionsBitField.Flags.ManageChannels) || isAuthorized(interaction.user.id);
+
+        if (!isAuthorizedToClose) {
+            embed.setTitle('Permission Denied 🚫')
+                 .setDescription('You need to be the ticket creator, an authorized user, or have `Manage Channels` permission to close this ticket.');
+            return interaction.followUp({ embeds: [embed], ephemeral: true });
         }
-
-        // Inform users in the ticket channel
-        await ticketChannel.send({
-            embeds: [
-                new EmbedBuilder()
-                    .setDescription(`This ticket is being closed by <@${interaction.user.id}>...`)
-                    .setColor(0xffa500) // Orange
-            ]
-        });
-        await interaction.editReply({ content: 'Ticket closure initiated.', ephemeral: true });
-
-
-        // Log to a designated channel
-        const logChannel = await interaction.guild.channels.fetch(TICKET_LOG_CHANNEL_ID);
-        if (logChannel && logChannel.type === ChannelType.GuildText) {
-            const closeEmbed = new EmbedBuilder()
-                .setTitle('Ticket Closed 🗑️')
-                .setDescription(`Ticket <#${ticketChannel.id}> (\`${ticketChannel.name}\`) closed by ${interaction.user.tag}.`)
-                .addFields(
-                    { name: 'Ticket Opener', value: `<@${ticketInfo.userId}>`, inline: true },
-                    { name: 'Closed By', value: `${interaction.user.tag} (${interaction.user.id})`, inline: true }
-                )
-                .setColor(0xff0000) // Red
-                .setTimestamp();
-            logChannel.send({ embeds: [closeEmbed] });
-        }
-
-        // Remove ticket from active tickets
-        delete activeTickets[ticketChannel.id];
-        saveTicketsData();
-
-        // Delete the ticket channel after a short delay (e.g., 5 seconds)
-        setTimeout(async () => {
-            try {
-                await ticketChannel.delete('Ticket closed by user/staff.');
-                console.log(`Deleted ticket channel: ${ticketChannel.name}`);
-            } catch (deleteError) {
-                console.error(`Error deleting ticket channel ${ticketChannel.name}:`, deleteError);
-            }
-        }, 5000);
-    }
-
-    // --- Claim Ticket Logic ---
-    else if (interaction.customId === 'claim_ticket') {
-        if (!ticketInfo) {
-            return interaction.editReply({ content: 'This does not appear to be an active ticket channel.', ephemeral: true });
-        }
-        if (!isStaff) {
-            return interaction.editReply({ content: 'Only support staff can claim tickets.', ephemeral: true });
-        }
-        if (ticketInfo.claimedBy) {
-            return interaction.editReply({ content: `This ticket has already been claimed by <@${ticketInfo.claimedBy}>.`, ephemeral: true });
-        }
-
-        ticketInfo.claimedBy = interaction.user.id;
-        saveTicketsData();
-
-        const claimedEmbed = new EmbedBuilder()
-            .setDescription(`✅ This ticket has been claimed by <@${interaction.user.id}>.`)
-            .setColor(0x2ecc71) // Green
-            .setTimestamp();
-
-        // Disable the claim button after it's clicked
-        const updatedComponents = interaction.message.components.map(row => {
-            return new ActionRowBuilder().addComponents(
-                row.components.map(component => {
-                    if (component.customId === 'claim_ticket') {
-                        return ButtonBuilder.from(component).setDisabled(true);
-                    }
-                    return component;
-                })
-            );
-        });
-
-        await interaction.message.edit({ embeds: [interaction.message.embeds[0], claimedEmbed], components: updatedComponents });
-        await interaction.editReply({ content: 'You have claimed this ticket!', ephemeral: true });
-
-        // Log to a designated channel
-        const logChannel = await interaction.guild.channels.fetch(TICKET_LOG_CHANNEL_ID);
-        if (logChannel && logChannel.type === ChannelType.GuildText) {
-            const claimLogEmbed = new EmbedBuilder()
-                .setTitle('Ticket Claimed 🙋‍♂️')
-                .setDescription(`Ticket <#${ticketChannel.id}> (\`${ticketChannel.name}\`) claimed by ${interaction.user.tag}.`)
-                .addFields(
-                    { name: 'Ticket Opener', value: `<@${ticketInfo.userId}>`, inline: true },
-                    { name: 'Claimed By', value: `${interaction.user.tag} (${interaction.user.id})`, inline: true }
-                )
-                .setColor(0x0099ff) // Blue
-                .setTimestamp();
-            logChannel.send({ embeds: [claimLogEmbed] });
-        }
-    }
-
-    // --- Add User to Ticket Logic ---
-    else if (interaction.customId === 'add_user_ticket') {
-        if (!ticketInfo) {
-            return interaction.editReply({ content: 'This does not appear to be an active ticket channel.', ephemeral: true });
-        }
-        if (!isStaff) {
-            return interaction.editReply({ content: 'Only support staff can add users to tickets.', ephemeral: true });
-        }
-
-        await interaction.editReply({ content: 'Please mention the user you want to add to this ticket (e.g., `@user`). I will listen for your next message in this channel.', ephemeral: false });
-
-        const filter = m => m.author.id === interaction.user.id && m.mentions.users.size > 0;
-        const collector = interaction.channel.createMessageCollector({ filter, time: 60000, max: 1 });
-
-        collector.on('collect', async m => {
-            const userToAdd = m.mentions.users.first();
-            if (!userToAdd) {
-                await interaction.channel.send('No user mentioned. Please try again.');
-                return;
-            }
-
-            try {
-                await ticketChannel.permissionOverwrites.edit(userToAdd.id, {
-                    ViewChannel: true,
-                    SendMessages: true,
-                    ReadMessageHistory: true,
-                });
-                await interaction.channel.send({
-                    embeds: [
-                        new EmbedBuilder()
-                            .setDescription(`✅ <@${userToAdd.id}> has been added to the ticket.`)
-                            .setColor(0x2ecc71)
-                    ]
-                });
-                // Log to a designated channel
-                const logChannel = await interaction.guild.channels.fetch(TICKET_LOG_CHANNEL_ID);
-                if (logChannel && logChannel.type === ChannelType.GuildText) {
-                    logChannel.send({
-                        embeds: [
-                            new EmbedBuilder()
-                                .setTitle('User Added to Ticket')
-                                .setDescription(`User ${userToAdd.tag} added to ticket <#${ticketChannel.id}> by ${interaction.user.tag}.`)
-                                .setColor(0x00ff00)
-                                .setTimestamp()
-                        ]
-                    });
-                }
-            } catch (error) {
-                console.error('Error adding user to ticket:', error);
-                await interaction.channel.send({
-                    embeds: [
-                        new EmbedBuilder()
-                            .setDescription(`❌ Failed to add <@${userToAdd.id}> to the ticket: \`${error.message}\`.`)
-                            .setColor(0xff0000)
-                    ]
-                });
-            }
-            m.delete().catch(e => console.error("Could not delete staff message:", e)); // Clean up staff's message
-        });
-
-        collector.on('end', collected => {
-            if (collected.size === 0) {
-                interaction.channel.send({
-                    embeds: [
-                        new EmbedBuilder()
-                            .setDescription('No user was mentioned in time. Add user operation cancelled.')
-                            .setColor(0xffa500)
-                    ]
-                }).catch(e => console.error("Error sending collector end message:", e));
-            }
-        });
-    }
-
-    // --- Remove User from Ticket Logic ---
-    else if (interaction.customId === 'remove_user_ticket') {
-        if (!ticketInfo) {
-            return interaction.editReply({ content: 'This does not appear to be an active ticket channel.', ephemeral: true });
-        }
-        if (!isStaff) {
-            return interaction.editReply({ content: 'Only support staff can remove users from tickets.', ephemeral: true });
-        }
-
-        await interaction.editReply({ content: 'Please mention the user you want to remove from this ticket (e.g., `@user`). I will listen for your next message in this channel.', ephemeral: false });
-
-        const filter = m => m.author.id === interaction.user.id && m.mentions.users.size > 0;
-        const collector = interaction.channel.createMessageCollector({ filter, time: 60000, max: 1 });
-
-        collector.on('collect', async m => {
-            const userToRemove = m.mentions.users.first();
-            if (!userToRemove) {
-                await interaction.channel.send('No user mentioned. Please try again.');
-                return;
-            }
-
-            // Prevent removing the ticket opener or the bot itself
-            if (userToRemove.id === ticketInfo.userId || userToRemove.id === client.user.id) {
-                await interaction.channel.send({
-                    embeds: [
-                        new EmbedBuilder()
-                            .setDescription('❌ Cannot remove the ticket opener or the bot from the ticket.')
-                            .setColor(0xff0000)
-                    ]
-                });
-                m.delete().catch(e => console.error("Could not delete staff message:", e));
-                return;
-            }
-
-            try {
-                await ticketChannel.permissionOverwrites.edit(userToRemove.id, {
-                    ViewChannel: false, // Deny view access
-                });
-                await interaction.channel.send({
-                    embeds: [
-                        new EmbedBuilder()
-                            .setDescription(`✅ <@${userToRemove.id}> has been removed from the ticket.`)
-                            .setColor(0x2ecc71)
-                    ]
-                });
-                // Log to a designated channel
-                const logChannel = await interaction.guild.channels.fetch(TICKET_LOG_CHANNEL_ID);
-                if (logChannel && logChannel.type === ChannelType.GuildText) {
-                    logChannel.send({
-                        embeds: [
-                            new EmbedBuilder()
-                                .setTitle('User Removed from Ticket')
-                                .setDescription(`User ${userToRemove.tag} removed from ticket <#${ticketChannel.id}> by ${interaction.user.tag}.`)
-                                .setColor(0xffa500)
-                                .setTimestamp()
-                        ]
-                    });
-                }
-            } catch (error) {
-                console.error('Error removing user from ticket:', error);
-                await interaction.channel.send({
-                    embeds: [
-                        new EmbedBuilder()
-                            .setDescription(`❌ Failed to remove <@${userToRemove.id}> from the ticket: \`${error.message}\`.`)
-                            .setColor(0xff0000)
-                    ]
-                });
-            }
-            m.delete().catch(e => console.error("Could not delete staff message:", e));
-        });
-
-        collector.on('end', collected => {
-            if (collected.size === 0) {
-                interaction.channel.send({
-                    embeds: [
-                        new EmbedBuilder()
-                            .setDescription('No user was mentioned in time. Remove user operation cancelled.')
-                            .setColor(0xffa500)
-                    ]
-                }).catch(e => console.error("Error sending collector end message:", e));
-            }
-        });
-    }
-
-    // --- Transcript Ticket Logic ---
-    else if (interaction.customId === 'transcript_ticket') {
-        if (!ticketInfo) {
-            return interaction.editReply({ content: 'This does not appear to be an active ticket channel.', ephemeral: true });
-        }
-        if (!isStaff) {
-            return interaction.editReply({ content: 'Only support staff can generate ticket transcripts.', ephemeral: true });
-        }
-
-        await interaction.editReply({ content: 'Generating transcript... This might take a moment.', ephemeral: true });
 
         try {
-            const messages = await ticketChannel.messages.fetch({ limit: 100 }); // Fetch last 100 messages
-            const transcript = messages.reverse().map(m =>
-                `${new Date(m.createdTimestamp).toLocaleString()} - ${m.author.tag}: ${m.cleanContent}`
-            ).join('\n');
+            // NEW: Cancel any pending scheduled deletion
+            cancelTicketDeletion(channelIdToClose);
 
-            const transcriptBuffer = Buffer.from(transcript, 'utf8');
-            const attachment = new AttachmentBuilder(transcriptBuffer, { name: `${ticketChannel.name}-transcript.txt` });
+            embed.setTitle('Closing Ticket... ⏳')
+                 .setDescription('This ticket will be closed shortly.')
+                 .setColor(0xffa500);
+            await channel.send({ embeds: [embed] }); // Send closing message in the ticket channel
 
-            const logChannel = await interaction.guild.channels.fetch(TICKET_LOG_CHANNEL_ID);
+            const logEmbed = new EmbedBuilder()
+                .setTitle('Ticket Closed 🗑️')
+                .setDescription(`Ticket channel ${channel.name} (ID: ${channelIdToClose}) closed by ${interaction.user}.`)
+                .addFields(
+                    { name: 'Opened By', value: `<@${ticketData.userId}>`, inline: true },
+                    { name: 'Reason', value: ticketData.reason, inline: true },
+                    { name: 'Opened At', value: new Date(ticketData.openedAt).toLocaleString(), inline: false }
+                )
+                .setColor(0xff0000)
+                .setTimestamp();
+
+            if (TICKET_LOG_CHANNEL_ID) {
+                const logChannel = await guild.channels.cache.get(TICKET_LOG_CHANNEL_ID);
+                if (logChannel) {
+                    logChannel.send({ embeds: [logEmbed] });
+                }
+            }
+
+            await channel.delete('Ticket closed via button interaction.');
+            delete activeTickets[channelIdToClose]; // Remove from activeTickets after channel deletion
+            saveTicketsData();
+            return interaction.followUp({ content: 'Ticket closed successfully!', ephemeral: true });
+
+        } catch (error) {
+            console.error('Error closing ticket via button:', error);
+            embed.setTitle('Error Closing Ticket ❌')
+                 .setDescription(`An error occurred while closing the ticket: \`${error.message}\``);
+            return interaction.followUp({ embeds: [embed], ephemeral: true });
+        }
+    }
+
+    if (customId === 'claim_ticket') {
+        await interaction.deferReply({ ephemeral: true });
+
+        const channelId = channel.id;
+        const ticketData = activeTickets[channelId];
+
+        if (!ticketData) {
+            embed.setTitle('Not a Ticket Channel ℹ️')
+                 .setDescription('This button can only be used in an active ticket channel.');
+            return interaction.followUp({ embeds: [embed], ephemeral: true });
+        }
+
+        if (!member.roles.cache.has(STAFF_ROLE_ID) && !isAuthorized(interaction.user.id)) {
+            embed.setTitle('Permission Denied 🚫')
+                 .setDescription('You need the Staff Role or be an authorized user to claim tickets.');
+            return interaction.followUp({ embeds: [embed], ephemeral: true });
+        }
+
+        if (ticketData.claimedBy) {
+            embed.setTitle('Ticket Already Claimed ⚠️')
+                 .setDescription(`This ticket has already been claimed by <@${ticketData.claimedBy}>.`);
+            return interaction.followUp({ embeds: [embed], ephemeral: true });
+        }
+
+        ticketData.claimedBy = interaction.user.id;
+        saveTicketsData();
+
+        embed.setTitle('Ticket Claimed! 🙋‍♂️')
+             .setDescription(`This ticket has been claimed by ${interaction.user}. They will assist you shortly.`);
+        await channel.send({ embeds: [embed] }); // Send in the ticket channel
+
+        // Update the original message buttons (optional, to show it's claimed)
+        if (message) {
+            const updatedActionRow = ActionRowBuilder.from(message.components[0]);
+            const claimButton = updatedActionRow.components.find(btn => btn.customId === 'claim_ticket');
+            if (claimButton) {
+                claimButton.setDisabled(true).setLabel(`Claimed by ${interaction.user.username}`);
+            }
+            await message.edit({ components: [updatedActionRow] });
+        }
+
+        return interaction.followUp({ content: 'You have successfully claimed this ticket!', ephemeral: true });
+    }
+
+    if (customId === 'add_user_ticket') {
+        await interaction.deferReply({ ephemeral: true });
+
+        const channelId = channel.id;
+        const ticketData = activeTickets[channelId];
+
+        if (!ticketData) {
+            embed.setTitle('Not a Ticket Channel ℹ️')
+                 .setDescription('This button can only be used in an active ticket channel.');
+            return interaction.followUp({ embeds: [embed], ephemeral: true });
+        }
+
+        if (!member.permissions.has(PermissionsBitField.Flags.ManageChannels) && !isAuthorized(interaction.user.id)) {
+            embed.setTitle('Permission Denied 🚫')
+                 .setDescription('You need `Manage Channels` permission or be an authorized user to add users to tickets.');
+            return interaction.followUp({ embeds: [embed], ephemeral: true });
+        }
+
+        const modal = new ModalBuilder()
+            .setCustomId('add_user_modal')
+            .setTitle('Add User to Ticket');
+
+        const userIdInput = new TextInputBuilder()
+            .setCustomId('userId')
+            .setLabel('User ID or Mention (e.g., 123456789012345678 or @user)')
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder('Enter User ID or mention them')
+            .setRequired(true);
+
+        const firstActionRow = new ActionRowBuilder().addComponents(userIdInput);
+        modal.addComponents(firstActionRow);
+
+        await interaction.showModal(modal);
+    }
+
+    if (customId === 'remove_user_ticket') {
+        await interaction.deferReply({ ephemeral: true });
+
+        const channelId = channel.id;
+        const ticketData = activeTickets[channelId];
+
+        if (!ticketData) {
+            embed.setTitle('Not a Ticket Channel ℹ️')
+                 .setDescription('This button can only be used in an active ticket channel.');
+            return interaction.followUp({ embeds: [embed], ephemeral: true });
+        }
+
+        if (!member.permissions.has(PermissionsBitField.Flags.ManageChannels) && !isAuthorized(interaction.user.id)) {
+            embed.setTitle('Permission Denied 🚫')
+                 .setDescription('You need `Manage Channels` permission or be an authorized user to remove users from tickets.');
+            return interaction.followUp({ embeds: [embed], ephemeral: true });
+        }
+
+        const modal = new ModalBuilder()
+            .setCustomId('remove_user_modal')
+            .setTitle('Remove User from Ticket');
+
+        const userIdInput = new TextInputBuilder()
+            .setCustomId('userId')
+            .setLabel('User ID or Mention (e.g., 123456789012345678 or @user)')
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder('Enter User ID or mention them')
+            .setRequired(true);
+
+        const firstActionRow = new ActionRowBuilder().addComponents(userIdInput);
+        modal.addComponents(firstActionRow);
+
+        await interaction.showModal(modal);
+    }
+
+    if (customId === 'transcript_ticket') {
+        await interaction.deferReply({ ephemeral: true });
+        const channelId = channel.id;
+        const ticketData = activeTickets[channelId];
+
+        if (!ticketData) {
+            embed.setTitle('Not a Ticket Channel ℹ️')
+                 .setDescription('This button can only be used in an active ticket channel.');
+            return interaction.followUp({ embeds: [embed], ephemeral: true });
+        }
+
+        if (!member.permissions.has(PermissionsBitField.Flags.ManageChannels) && !isAuthorized(interaction.user.id) && interaction.user.id !== ticketData.userId) {
+            embed.setTitle('Permission Denied 🚫')
+                 .setDescription('You need `Manage Channels` permission, be an authorized user, or the ticket creator to generate a transcript.');
+            return interaction.followUp({ embeds: [embed], ephemeral: true });
+        }
+
+        try {
+            const fetchedMessages = await channel.messages.fetch({ limit: 100 }); // Fetch last 100 messages
+            const messagesArray = Array.from(fetchedMessages.values()).sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+
+            let transcriptContent = `Ticket Transcript for #${channel.name} (ID: ${channel.id})\n`;
+            transcriptContent += `Opened by: ${ticketData.userId} on ${new Date(ticketData.openedAt).toLocaleString()}\n`;
+            if (ticketData.reason) transcriptContent += `Reason: ${ticketData.reason}\n`;
+            if (ticketData.claimedBy) transcriptContent += `Claimed by: ${ticketData.claimedBy}\n`;
+            transcriptContent += '------------------------------------\n\n';
+
+            messagesArray.forEach(msg => {
+                const authorTag = msg.author.tag;
+                const timestamp = new Date(msg.createdTimestamp).toLocaleString();
+                let content = msg.content;
+
+                // Handle embeds (simple representation)
+                if (msg.embeds.length > 0) {
+                    msg.embeds.forEach(emb => {
+                        content += `\n[EMBED] Title: ${emb.title || 'N/A'}`;
+                        if (emb.description) content += `\nDescription: ${emb.description}`;
+                        if (emb.fields.length > 0) {
+                            emb.fields.forEach(field => content += `\n  Field: ${field.name} - ${field.value}`);
+                        }
+                    });
+                }
+                // Handle attachments (list filenames)
+                if (msg.attachments.size > 0) {
+                    content += `\n[ATTACHMENTS]: ${Array.from(msg.attachments.values()).map(att => att.name).join(', ')}`;
+                }
+
+                transcriptContent += `[${timestamp}] ${authorTag}: ${content}\n`;
+            });
+
+            const transcriptBuffer = Buffer.from(transcriptContent, 'utf-8');
+            const attachment = new AttachmentBuilder(transcriptBuffer, { name: `transcript-${channel.name}.txt` });
+
+            const logChannel = await guild.channels.cache.get(TICKET_LOG_CHANNEL_ID);
             if (logChannel && logChannel.type === ChannelType.GuildText) {
                 await logChannel.send({
                     embeds: [
                         new EmbedBuilder()
                             .setTitle('Ticket Transcript Generated 📄')
-                            .setDescription(`Transcript for ticket <#${ticketChannel.id}> (\`${ticketChannel.name}\`) generated by ${interaction.user.tag}.`)
+                            .setDescription(`Transcript for ticket <#${channel.id}> (\`${channel.name}\`) generated by ${interaction.user.tag}.`)
                             .setColor(0x3498db) // Blue
                             .setTimestamp()
                     ],
@@ -2014,14 +2048,132 @@ client.on('interactionCreate', async interaction => {
 });
 
 
+// === Modal Submit Handler ===
+client.on('modalSubmit', async modal => {
+    if (modal.customId === 'add_user_modal') {
+        await modal.deferReply({ ephemeral: true });
+        const userIdOrMention = modal.fields.getTextInputValue('userId');
+        const channel = modal.channel;
+
+        const ticketData = activeTickets[channel.id];
+        if (!ticketData) {
+            return modal.followUp({ content: 'This is not an active ticket channel.', ephemeral: true });
+        }
+
+        if (!modal.member.permissions.has(PermissionsBitField.Flags.ManageChannels) && !isAuthorized(modal.user.id)) {
+            return modal.followUp({ content: 'You do not have permission to add users to tickets.', ephemeral: true });
+        }
+
+        try {
+            let targetUser;
+            const userIdMatch = userIdOrMention.match(/\d+/); // Extract ID from mention or plain ID
+            const targetId = userIdMatch ? userIdMatch[0] : null;
+
+            if (targetId) {
+                targetUser = await modal.guild.members.fetch(targetId).catch(() => null);
+            }
+
+            if (!targetUser) {
+                return modal.followUp({ content: 'Could not find the user. Please provide a valid User ID or mention.', ephemeral: true });
+            }
+
+            // Check if user is already in the channel
+            const currentPermissions = channel.permissionsFor(targetUser);
+            if (currentPermissions.has(PermissionsBitField.Flags.ViewChannel)) {
+                return modal.followUp({ content: `${targetUser.user.tag} is already in this ticket channel.`, ephemeral: true });
+            }
+
+            await channel.permissionOverwrites.edit(targetUser.id, {
+                ViewChannel: true,
+                SendMessages: true,
+                ReadMessageHistory: true,
+            });
+
+            await channel.send({ embeds: [
+                new EmbedBuilder()
+                    .setTitle('User Added to Ticket ➕')
+                    .setDescription(`${targetUser.user.tag} has been added to the ticket by ${modal.user.tag}.`)
+                    .setColor(0x00ff00)
+            ]});
+            return modal.followUp({ content: `${targetUser.user.tag} has been successfully added to the ticket.`, ephemeral: true });
+
+        } catch (error) {
+            console.error('Error adding user to ticket:', error);
+            return modal.followUp({ content: `Failed to add user: \`${error.message}\`. Please ensure the bot has necessary permissions.`, ephemeral: true });
+        }
+    }
+
+    if (modal.customId === 'remove_user_modal') {
+        await modal.deferReply({ ephemeral: true });
+        const userIdOrMention = modal.fields.getTextInputValue('userId');
+        const channel = modal.channel;
+
+        const ticketData = activeTickets[channel.id];
+        if (!ticketData) {
+            return modal.followUp({ content: 'This is not an active ticket channel.', ephemeral: true });
+        }
+
+        if (!modal.member.permissions.has(PermissionsBitField.Flags.ManageChannels) && !isAuthorized(modal.user.id)) {
+            return modal.followUp({ content: 'You do not have permission to remove users from tickets.', ephemeral: true });
+        }
+
+        try {
+            let targetUser;
+            const userIdMatch = userIdOrMention.match(/\d+/);
+            const targetId = userIdMatch ? userIdMatch[0] : null;
+
+            if (targetId) {
+                targetUser = await modal.guild.members.fetch(targetId).catch(() => null);
+            }
+
+            if (!targetUser) {
+                return modal.followUp({ content: 'Could not find the user. Please provide a valid User ID or mention.', ephemeral: true });
+            }
+
+            // Prevent removing the ticket creator or the bot itself
+            if (targetUser.id === ticketData.userId) {
+                return modal.followUp({ content: 'You cannot remove the ticket creator from the ticket.', ephemeral: true });
+            }
+            if (targetUser.id === modal.client.user.id) {
+                return modal.followUp({ content: 'You cannot remove the bot from the ticket.', ephemeral: true });
+            }
+
+
+            // Check if user is actually in the channel
+            const currentPermissions = channel.permissionsFor(targetUser);
+            if (!currentPermissions.has(PermissionsBitField.Flags.ViewChannel)) {
+                return modal.followUp({ content: `${targetUser.user.tag} is not currently in this ticket channel.`, ephemeral: true });
+            }
+
+            await channel.permissionOverwrites.edit(targetUser.id, {
+                ViewChannel: false,
+                SendMessages: false,
+                ReadMessageHistory: false,
+            });
+
+            await channel.send({ embeds: [
+                new EmbedBuilder()
+                    .setTitle('User Removed from Ticket➖')
+                    .setDescription(`${targetUser.user.tag} has been removed from the ticket by ${modal.user.tag}.`)
+                    .setColor(0xff0000)
+            ]});
+            return modal.followUp({ content: `${targetUser.user.tag} has been successfully removed from the ticket.`, ephemeral: true });
+
+        } catch (error) {
+            console.error('Error removing user from ticket:', error);
+            return modal.followUp({ content: `Failed to remove user: \`${error.message}\`. Please ensure the bot has necessary permissions.`, ephemeral: true });
+        }
+    }
+});
+
+
 // === Login ===
 client.login(TOKEN);
 
 // === Keepalive Server ===
-// This helps keep the bot alive on platforms like Render, Replit, etc.
 const app = express();
 app.get('/', (req, res) => {
-    res.send('Bot is alive!');
+    res.send('Bot is running and alive!');
 });
 
 const PORT = process.env.PORT || 3000;
