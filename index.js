@@ -1649,10 +1649,10 @@ client.on('messageCreate', async message => {
             console.log(`Ticket ${message.channel.id} scheduled for silent deletion in 6 hours due to =pls command.`);
 
             // Send the "Cheers for our staff!" message as per the image
-            embed.setTitle('Cheers for our staff! 🎉')
-                 .setDescription(`Show appreciation with \`+vouch @user\` in <#${VOUCH_CHANNEL_ID}>.\nNot happy? Use \`-vouch @user <reason>\`.\n\n**You are now eligible to receive ONE vouch/review.**`);
+            embed.setTitle(':)')
+                 .setDescription(`vouch our staff under 6h after **`);
             // Add the VOUCH part as a field to mimic the image
-            embed.addFields({ name: '||⭐°• VOUCH°•+.', value: '\u200b', inline: false }); // Using zero-width space for empty value
+            embed.addFields({ name: 'DO IT ASAP ', value: '\u200b', inline: false }); // Using zero-width space for empty value
             return message.channel.send({ embeds: [embed] });
 
         } else {
