@@ -69,14 +69,14 @@ if (!fs.existsSync(COOKIE_DIR)) fs.mkdirSync(COOKIE_DIR);
 });
 
 // === Global data stores ===
-// Ticket System Data (from zaid 1234.txt)
+// Ticket System Data
 let activeTickets = {};        // { ticketChannelId: { userId: string, openedAt: string, reason: string, claimedBy?: string, guildId: string, scheduledDeletionTimestamp?: number } }
 let ticketPanelInfo = {        // Stores ticket panel message and channel IDs
     channelId: null,
     messageId: null
 };
 
-// General Bot Data (from zaid 123.txt)
+// General Bot Data
 let rolesAllowed = {};         // { commandName: roleId }
 let stock = {};                // { category: [item1, item2, ...] }
 let redeemed = {};             // { hexCode: { redeemed: boolean, ... } } (Note: This was for manual redemption, now replaced by generatedCodes)
@@ -94,7 +94,7 @@ const dynamicCommandMap = {};
 
 // Set of all static command names (without '=') for validation
 const ALL_STATIC_COMMAND_NAMES = new Set([
-    'vouch', 'mvouch', // for +vouch and -vouch, +mvouch, -mvouch
+    'vouch', 'mvouch',
     'profile',
     'addcategory',
     'categoryremove',
@@ -116,8 +116,8 @@ const ALL_STATIC_COMMAND_NAMES = new Set([
     'cremove',
     'cool',
     'timesaved',
-    // Ticket System Commands (added from zaid 1234.txt)
-    'ticket', 'newticket', 'closeticket', 'setuppanel'
+    'ticket', 'newticket', 'closeticket', 'setuppanel',
+    'help' // Added help command
 ]);
 
 // Stores timeout IDs for scheduled ticket deletions (transient, not persisted)
@@ -249,12 +249,7 @@ async function scheduleTicketDeletion(channelId, delayMs) {
                     }
                 }
 
-                await channel.send({ embeds: [
-                    new EmbedBuilder()
-                        .setTitle('Ticket Deleting... ⏳')
-                        .setDescription('This ticket is now being automatically deleted due to the use of the `=pls` command.')
-                        .setColor(0xffa500)
-                ]});
+                // Do not send a message in the ticket channel itself about deletion
                 await channel.delete('Scheduled deletion due to =pls command.');
                 console.log(`Ticket channel ${channelId} deleted successfully.`);
             } else {
@@ -389,8 +384,8 @@ async function createTicketChannel(member, guild, reason = 'No reason provided')
             openedAt: new Date().toISOString(),
             reason: reason,
             claimedBy: null, // Initially not claimed
-            guildId: guild.id, // NEW: Store guild ID for scheduled deletion
-            scheduledDeletionTimestamp: null // NEW: Initialize as null
+            guildId: guild.id, // Store guild ID for scheduled deletion
+            scheduledDeletionTimestamp: null // Initialize as null
         };
         saveTicketsData();
 
@@ -561,9 +556,9 @@ client.on('messageCreate', async message => {
     // --- Guild Context Check ---
     // Many commands require message.member or message.guild.permissions, etc.
     // If it's not a guild message, these properties will be null.
-    // We explicitly allow =backup to proceed without a guild context check, as it DMs the user.
+    // We explicitly allow =backup and =help to proceed without a guild context check, as they can be used in DMs.
     // All other commands that manage server data or check roles/permissions should be restricted to guilds.
-    if (!message.guild && commandWithoutPrefix !== 'backup') {
+    if (!message.guild && commandWithoutPrefix !== 'backup' && commandWithoutPrefix !== 'help') {
         if (message.channel.type === ChannelType.DM) {
             embed.setTitle('Command Restricted 🚫')
                  .setDescription('This command can only be used in a server channel.');
@@ -613,6 +608,73 @@ client.on('messageCreate', async message => {
 
     // === Static Command Handling ===
 
+    // --- Help Command ---
+    if (cmd === '=help') {
+        const helpEmbed = new EmbedBuilder()
+            .setTitle('📚 Bot Commands Help')
+            .setDescription('Here\'s a list of all available commands:')
+            .setColor(0x1abc9c); // Teal color
+
+        // General Commands
+        helpEmbed.addFields(
+            { name: 'General Commands', value: '`=help`, `=profile [@user]`, `=pls`' },
+            { name: 'Vouch Commands', value: '`+vouch @user <reason>`, `-vouch @user <reason>`, `+mvouch @user <amount> [reason]`, `-mvouch @user <amount> [reason]`' }
+        );
+
+        // Stock Commands (Admin/Staff)
+        if (message.member && (message.member.permissions.has('ManageGuild') || isAuthorized(message.author.id))) {
+            helpEmbed.addFields(
+                { name: 'Stock Management (Admin/Staff)', value: '`=addcategory <name>`, `=categoryremove <name>`, `=addstock <category> <item>`, `=removestock <category> <item>`' },
+                { name: 'Stock View', value: '`=stock [category]`, `=stockall`' }
+            );
+        } else {
+            helpEmbed.addFields(
+                { name: 'Stock View', value: '`=stock [category]`, `=stockall`' }
+            );
+        }
+
+        // Cookie/File Stock Commands (Admin/Staff)
+        if (message.member && (message.member.permissions.has('ManageGuild') || isAuthorized(message.author.id))) {
+            helpEmbed.addFields(
+                { name: 'Cookie Stock Management (Admin/Staff)', value: '`=cstock`, `=upload <category> (attach .zip)`, `=cremove <category>`, `=csend <category> @user`' }
+            );
+        } else {
+            helpEmbed.addFields(
+                { name: 'Cookie Stock View', value: '`=cstock`' }
+            );
+        }
+
+        // Ticket System Commands
+        helpEmbed.addFields(
+            { name: 'Ticket System', value: '`=ticket [reason]`, `=newticket [reason]`, `=closeticket`' }
+        );
+        if (message.author.id === OWNER_ID) {
+            helpEmbed.addFields(
+                { name: 'Ticket Panel Setup (Owner Only)', value: '`=setuppanel`' }
+            );
+        }
+
+        // Restriction/Cooldown/Backup Commands (Admin/Staff/Authorized)
+        if (message.member && (message.member.permissions.has('ManageGuild') || isAuthorized(message.author.id))) {
+            helpEmbed.addFields(
+                { name: 'Admin & Utility (Admin/Authorized)', value: '`=add <command> @role`, `=remove <command>`, `=restrict <command> <#channel>`, `=unrestrict <command>`, `=cool <command> <seconds>`, `=backup`, `=timesaved (attach .json)`, `=debug`' }
+            );
+        }
+
+        // Dynamic Commands (e.g., =fgen, =pgen)
+        const dynamicCmds = Object.keys(dynamicCommandMap);
+        if (dynamicCmds.length > 0) {
+            helpEmbed.addFields({
+                name: 'Dynamic Stock Generation Commands',
+                value: dynamicCmds.map(cmdName => `\`=${cmdName} [stock_name]\``).join(', ')
+            });
+        }
+
+        helpEmbed.setFooter({ text: 'Prefix for most commands is "=".' });
+
+        return message.channel.send({ embeds: [helpEmbed] });
+    }
+
     // --- Ticket System Commands ---
     if (cmd === '=ticket' || cmd === '=newticket') {
         const reason = args.slice(1).join(' ');
@@ -639,16 +701,17 @@ client.on('messageCreate', async message => {
         }
 
         try {
-            const ticketChannel = message.guild.channels.cache.get(channelIdToClose);
-            if (ticketChannel) {
-                // NEW: Cancel any pending scheduled deletion
-                cancelTicketDeletion(channelIdToClose);
+            // Cancel any pending scheduled deletion
+            cancelTicketDeletion(channelIdToClose);
 
-                embed.setTitle('Closing Ticket... ⏳')
-                     .setDescription('This ticket will be closed shortly.')
-                     .setColor(0xffa500); // Orange aura for closing
-                await message.channel.send({ embeds: [embed] });
+            // Send the closing message BEFORE deleting the channel
+            embed.setTitle('Closing Ticket... ⏳')
+                 .setDescription('This ticket will be closed shortly.')
+                 .setColor(0xffa500); // Orange aura for closing
+            await message.channel.send({ embeds: [embed] });
 
+            const ticketChannel = message.guild.channels.cache.get(channelIdToClose); // Re-fetch to ensure it's still available
+            if (ticketChannel) { // Check if channel still exists before logging its name etc.
                 const logEmbed = new EmbedBuilder()
                     .setTitle('Ticket Closed 🗑️')
                     .setDescription(`Ticket channel ${ticketChannel.name} (ID: ${channelIdToClose}) closed by ${message.author}.`)
@@ -668,9 +731,12 @@ client.on('messageCreate', async message => {
                 }
 
                 await ticketChannel.delete('Ticket closed by user or staff.');
-                delete activeTickets[channelIdToClose]; // Remove from activeTickets after channel deletion
-                saveTicketsData();
+            } else {
+                console.warn(`Ticket channel ${channelIdToClose} not found during close_ticket command, likely already deleted.`);
             }
+
+            delete activeTickets[channelIdToClose]; // Remove from activeTickets after channel deletion
+            saveTicketsData();
         } catch (error) {
             console.error('Error closing ticket:', error);
             embed.setTitle('Error Closing Ticket ❌')
@@ -1176,7 +1242,7 @@ client.on('messageCreate', async message => {
     // NEW: =cool command
     if (cmd === '=cool') {
         if (!isAuthorized(message.author.id)) {
-            embed.setTitle('Authorization Required 🚫')
+            embed.setTitle('Authorization Required �')
                  .setDescription('You need to be an authorized user to use this command.');
             return message.channel.send({ embeds: [embed] });
         }
@@ -1567,11 +1633,10 @@ client.on('messageCreate', async message => {
     }
 
     if (cmd === '=pls') {
-        // NEW: Set the user as vouchable for one vouch
-        // Clear any previous state for this user to allow a new vouch
+        // Set the user as vouchable for one vouch
         plsRequests[message.author.id] = { timestamp: Date.now(), vouchUsed: false };
 
-        // NEW: Schedule ticket deletion after 6 hours if =pls is used in a ticket
+        // If =pls is used in a ticket, schedule deletion silently
         if (message.channel.type === ChannelType.GuildText && activeTickets[message.channel.id]) {
             const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
             const deletionTimestamp = Date.now() + SIX_HOURS_MS;
@@ -1579,20 +1644,25 @@ client.on('messageCreate', async message => {
             activeTickets[message.channel.id].scheduledDeletionTimestamp = deletionTimestamp;
             saveTicketsData(); // Persist the scheduled deletion timestamp
 
-            // Schedule the actual deletion
+            // Schedule the actual deletion silently
             scheduleTicketDeletion(message.channel.id, SIX_HOURS_MS);
+            console.log(`Ticket ${message.channel.id} scheduled for silent deletion in 6 hours due to =pls command.`);
 
-            embed.setTitle('Ticket Scheduled for Deletion ⏳')
-                 .setDescription(`The \`=pls\` command was used in this ticket. This ticket will be automatically closed and deleted in **6 hours**.\n\nIf you wish to close it sooner, use the \`=closeticket\` command or the "Close Ticket" button.`);
-            await message.channel.send({ embeds: [embed] });
-            // Do NOT delete the message or channel immediately
+            // Send the "Cheers for our staff!" message as per the image
+            embed.setTitle('Cheers for our staff! 🎉')
+                 .setDescription(`Show appreciation with \`+vouch @user\` in <#${VOUCH_CHANNEL_ID}>.\nNot happy? Use \`-vouch @user <reason>\`.\n\n**You are now eligible to receive ONE vouch/review.**`);
+            // Add the VOUCH part as a field to mimic the image
+            embed.addFields({ name: '||⭐°• VOUCH°•+.', value: '\u200b', inline: false }); // Using zero-width space for empty value
+            return message.channel.send({ embeds: [embed] });
+
         } else {
             // Original =pls behavior if not in a ticket
             embed.setTitle('Cheers for our staff! 🎉')
                  .setDescription(`Show appreciation with \`+vouch @user\` in <#${VOUCH_CHANNEL_ID}>.\nNot happy? Use \`-vouch @user <reason>\`.\n\n**You are now eligible to receive ONE vouch/review.**`);
-            await message.channel.send({ embeds: [embed] });
+            // Add the VOUCH part as a field to mimic the image
+            embed.addFields({ name: '||⭐°• VOUCH°•+.', value: '\u200b', inline: false }); // Using zero-width space for empty value
+            return message.channel.send({ embeds: [embed] });
         }
-        return; // Prevent further processing
     }
 
     if (cmd === '=backup') {
@@ -1817,42 +1887,58 @@ client.on('interactionCreate', async interaction => {
         }
 
         try {
-            // NEW: Cancel any pending scheduled deletion
+            // Cancel any pending scheduled deletion
             cancelTicketDeletion(channelIdToClose);
 
+            // Send the success message to the user BEFORE deleting the channel
+            await interaction.followUp({ content: 'Ticket closed successfully!', ephemeral: true });
+
+            // Send the closing message in the ticket channel (this is fine, it's a separate send)
             embed.setTitle('Closing Ticket... ⏳')
                  .setDescription('This ticket will be closed shortly.')
                  .setColor(0xffa500);
-            await channel.send({ embeds: [embed] }); // Send closing message in the ticket channel
+            await channel.send({ embeds: [embed] }); 
 
-            const logEmbed = new EmbedBuilder()
-                .setTitle('Ticket Closed 🗑️')
-                .setDescription(`Ticket channel ${channel.name} (ID: ${channelIdToClose}) closed by ${interaction.user}.`)
-                .addFields(
-                    { name: 'Opened By', value: `<@${ticketData.userId}>`, inline: true },
-                    { name: 'Reason', value: ticketData.reason, inline: true },
-                    { name: 'Opened At', value: new Date(ticketData.openedAt).toLocaleString(), inline: false }
-                )
-                .setColor(0xff0000)
-                .setTimestamp();
+            const ticketChannel = guild.channels.cache.get(channelIdToClose); // Re-fetch to ensure it's still available
+            if (ticketChannel) { // Check if channel still exists before logging its name etc.
+                const logEmbed = new EmbedBuilder()
+                    .setTitle('Ticket Closed 🗑️')
+                    .setDescription(`Ticket channel ${ticketChannel.name} (ID: ${channelIdToClose}) closed by ${interaction.user}.`)
+                    .addFields(
+                        { name: 'Opened By', value: `<@${ticketData.userId}>`, inline: true },
+                        { name: 'Reason', value: ticketData.reason, inline: true },
+                        { name: 'Opened At', value: new Date(ticketData.openedAt).toLocaleString(), inline: false }
+                    )
+                    .setColor(0xff0000)
+                    .setTimestamp();
 
-            if (TICKET_LOG_CHANNEL_ID) {
-                const logChannel = await guild.channels.cache.get(TICKET_LOG_CHANNEL_ID);
-                if (logChannel) {
-                    logChannel.send({ embeds: [logEmbed] });
+                if (TICKET_LOG_CHANNEL_ID) {
+                    const logChannel = await guild.channels.cache.get(TICKET_LOG_CHANNEL_ID);
+                    if (logChannel) {
+                        logChannel.send({ embeds: [logEmbed] });
+                    }
                 }
+
+                await ticketChannel.delete('Ticket closed via button interaction.');
+            } else {
+                console.warn(`Ticket channel ${channelIdToClose} not found during close_ticket button, likely already deleted.`);
             }
 
-            await channel.delete('Ticket closed via button interaction.');
             delete activeTickets[channelIdToClose]; // Remove from activeTickets after channel deletion
             saveTicketsData();
-            return interaction.followUp({ content: 'Ticket closed successfully!', ephemeral: true });
+            // No need for a second followUp here as it was moved above
 
         } catch (error) {
             console.error('Error closing ticket via button:', error);
-            embed.setTitle('Error Closing Ticket ❌')
-                 .setDescription(`An error occurred while closing the ticket: \`${error.message}\``);
-            return interaction.followUp({ embeds: [embed], ephemeral: true });
+            // If the initial followUp failed, this catch block might still execute.
+            // We should ensure we don't try to followUp again if it already failed.
+            // A simple console log might be sufficient here if interaction.followUp already failed.
+            // Or, if deferReply was successful, we can editReply.
+            try {
+                await interaction.editReply({ content: `Failed to close ticket: \`${error.message}\`.` });
+            } catch (editError) {
+                console.error('Error editing reply after close ticket failure:', editError);
+            }
         }
     }
 
